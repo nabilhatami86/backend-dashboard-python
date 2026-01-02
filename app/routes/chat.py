@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from app.schemas.chat_schema import (
@@ -15,7 +15,10 @@ from app.controller.chat_controller import (
     create_chat,
     update_chat,
     send_message,
-    mark_messages_as_read
+    mark_messages_as_read,
+    delete_chat,
+    update_message,
+    delete_message
 )
 from app.config.deps import get_db
 from app.utils.jwt import decode_access_token
@@ -94,3 +97,48 @@ def send_chat_message(
 def mark_chat_as_read(chat_id: int, db: Session = Depends(get_db)):
     """Mark all messages in chat as read"""
     return mark_messages_as_read(chat_id, db)
+
+
+@router.delete("/{chat_id}")
+def delete_chat_endpoint(
+    chat_id: int,
+    db: Session = Depends(get_db),
+    authorization: Optional[str] = Header(None)
+):
+    """Delete a chat and all its messages"""
+    user = get_current_user(authorization)
+
+    # Only admin can delete chats
+    if not user or user.get("role") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can delete chats"
+        )
+
+    return delete_chat(chat_id, db)
+
+
+@router.patch("/messages/{message_id}")
+def update_message_endpoint(
+    message_id: int,
+    data: dict,
+    db: Session = Depends(get_db)
+):
+    """Update/edit a message"""
+    new_text = data.get("text")
+    if not new_text:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Text is required"
+        )
+
+    return update_message(message_id, new_text, db)
+
+
+@router.delete("/messages/{message_id}")
+def delete_message_endpoint(
+    message_id: int,
+    db: Session = Depends(get_db)
+):
+    """Delete a message"""
+    return delete_message(message_id, db)

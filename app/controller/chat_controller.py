@@ -225,3 +225,77 @@ def mark_messages_as_read(chat_id: int, db: Session):
     db.commit()
 
     return {"message": "Messages marked as read"}
+
+
+def delete_chat(chat_id: int, db: Session):
+    """Delete a chat and all its messages"""
+    chat = db.query(Chat).filter(Chat.id == chat_id).first()
+
+    if not chat:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chat not found"
+        )
+
+    # Delete all messages first (foreign key constraint)
+    db.query(Message).filter(Message.chat_id == chat_id).delete()
+
+    # Delete the chat
+    db.delete(chat)
+    db.commit()
+
+    return {"message": "Chat deleted successfully"}
+
+
+def update_message(message_id: int, new_text: str, db: Session):
+    """Update/edit a message"""
+    message = db.query(Message).filter(Message.id == message_id).first()
+
+    if not message:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Message not found"
+        )
+
+    # Only allow editing agent messages
+    if message.sender != MessageSender.agent:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Can only edit agent messages"
+        )
+
+    message.text = new_text
+    db.commit()
+    db.refresh(message)
+
+    return MessageResponse(
+        id=message.id,
+        text=message.text,
+        sender=message.sender.value,
+        status=message.status.value,
+        time=message.created_at.strftime("%H:%M"),
+        agent_id=message.agent_id
+    )
+
+
+def delete_message(message_id: int, db: Session):
+    """Delete a message"""
+    message = db.query(Message).filter(Message.id == message_id).first()
+
+    if not message:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Message not found"
+        )
+
+    # Only allow deleting agent messages
+    if message.sender != MessageSender.agent:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Can only delete agent messages"
+        )
+
+    db.delete(message)
+    db.commit()
+
+    return {"message": "Message deleted successfully"}
