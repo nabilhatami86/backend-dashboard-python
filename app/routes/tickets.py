@@ -62,6 +62,7 @@ class TicketStatsResponse(BaseModel):
     total_in_progress: int
     total_waiting_customer: int
     total_resolved_today: int
+    total_resolved: int
     total_escalated: int
     avg_wait_time_seconds: Optional[float]
     avg_resolution_time_seconds: Optional[float]
@@ -392,6 +393,9 @@ def get_ticket_stats(
         func.date(Ticket.resolved_at) == today
     ).count()
 
+    # Total resolved (all time)
+    total_resolved = query.filter(Ticket.status == TicketStatus.resolved).count()
+
     # Average times
     avg_wait_time = db.query(
         func.avg(func.extract('epoch', Ticket.assigned_at - Ticket.created_at))
@@ -407,6 +411,7 @@ def get_ticket_stats(
         "total_in_progress": total_in_progress,
         "total_waiting_customer": total_waiting_customer,
         "total_resolved_today": total_resolved_today,
+        "total_resolved": total_resolved,
         "total_escalated": total_escalated,
         "avg_wait_time_seconds": float(avg_wait_time) if avg_wait_time else None,
         "avg_resolution_time_seconds": float(avg_resolution_time) if avg_resolution_time else None,
