@@ -4,7 +4,17 @@ from alembic import context
 from sqlalchemy import pool
 
 from app.config.database import Base, engine
-from app.models.user import User
+# Import all models for Alembic auto-detection
+from app.models import (
+    User,
+    Chat,
+    Message,
+    AdminMessage,
+    Ticket,
+    AgentProfile,
+    QueueAssignment,
+    AgentMetrics,
+)
 
 # Alembic Config object
 config = context.config

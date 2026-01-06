@@ -43,3 +43,6 @@ class Chat(Base):
 
     # Relationship to messages
     messages = relationship("Message", back_populates="chat", cascade="all, delete-orphan")
+
+    # Relationship to ticket (one-to-one)
+    ticket = relationship("Ticket", back_populates="chat", uselist=False, cascade="all, delete-orphan")

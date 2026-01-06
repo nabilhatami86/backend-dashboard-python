@@ -20,7 +20,7 @@ services:
 
   db:
     image: postgres:16
-    container_name: asmi_postgres
+    container_name: dashboard_postgres
     restart: always
     environment:
       POSTGRES_DB: asmi_db

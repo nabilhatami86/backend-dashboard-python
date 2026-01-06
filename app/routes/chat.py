@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from app.schemas.chat_schema import (
@@ -18,7 +18,9 @@ from app.controller.chat_controller import (
     mark_messages_as_read,
     delete_chat,
     update_message,
-    delete_message
+    delete_message,
+    get_available_tickets,
+    claim_ticket
 )
 from app.config.deps import get_db
 from app.utils.jwt import decode_access_token
@@ -142,3 +144,48 @@ def delete_message_endpoint(
 ):
     """Delete a message"""
     return delete_message(message_id, db)
+
+
+# ================= TICKET QUEUE ENDPOINTS =================
+
+@router.get("/queue/available", response_model=List[ChatResponse])
+def get_ticket_queue(db: Session = Depends(get_db)):
+    """
+    Get all available tickets in the queue with full chat details and messages.
+
+    Returns unassigned chats that agents can claim.
+    Ordered by FIFO (First In First Out) - oldest chats first.
+    """
+    return get_available_tickets(db)
+
+
+@router.post("/{chat_id}/claim", response_model=ChatResponse)
+def claim_ticket_endpoint(
+    chat_id: int,
+    db: Session = Depends(get_db),
+    authorization: Optional[str] = Header(None)
+):
+    """
+    Claim a ticket from the queue.
+
+    - Assigns the chat to the requesting agent
+    - Changes chat mode from 'bot' to 'agent'
+    - Returns the claimed chat details
+
+    Only agents can claim tickets.
+    """
+    user = get_current_user(authorization)
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required"
+        )
+
+    if user.get("role") != "agent":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only agents can claim tickets"
+        )
+
+    return claim_ticket(chat_id, user.get("id"), db)

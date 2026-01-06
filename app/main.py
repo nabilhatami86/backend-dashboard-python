@@ -6,13 +6,17 @@ from app.whapi.webhook import router as whapi_router
 
 from app.config.database import engine, Base
 from app.config.deps import get_db
-from app.routes import auth, chat, users, admin_chat
+from app.routes import auth, chat, users, admin_chat, tickets, agent_chat
 
 # Import models to ensure they're registered with Base
 from app.models.user import User
 from app.models.chat import Chat
 from app.models.message import Message
 from app.models.admin_message import AdminMessage
+from app.models.ticket import Ticket
+from app.models.agent_profile import AgentProfile
+from app.models.queue_assignment import QueueAssignment
+from app.models.agent_metrics import AgentMetrics
 
 # create tables
 Base.metadata.create_all(bind=engine)
@@ -48,6 +52,8 @@ app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(users.router)
 app.include_router(admin_chat.router)
+app.include_router(tickets.router)
+app.include_router(agent_chat.router)
 app.include_router(whapi_router)
 
 

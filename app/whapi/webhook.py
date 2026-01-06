@@ -3,9 +3,11 @@ from sqlalchemy.orm import Session
 import logging
 from app.whapi.client import send_text
 from app.services.bot_service import handle_bot
+from app.services.queue_service import QueueService
 from app.config.deps import get_db
 from app.models.chat import Chat, ChatMode, ChatChannel
 from app.models.message import Message, MessageSender, MessageStatus
+from app.models.ticket import TicketPriority
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -109,6 +111,40 @@ def save_bot_reply(db: Session, chat: Chat, text: str) -> Message:
     return message
 
 
+def ensure_ticket_exists(db: Session, chat: Chat) -> None:
+    """
+    Ensure ticket exists for agent mode chats
+    Auto-create and assign if needed
+    """
+    from app.models.ticket import Ticket
+
+    # Check if ticket already exists
+    existing_ticket = db.query(Ticket).filter(Ticket.chat_id == chat.id).first()
+    if existing_ticket:
+        logger.info(f"Ticket already exists for chat {chat.id}: ticket_id={existing_ticket.id}")
+        return
+
+    # Create ticket and auto-assign
+    queue_service = QueueService(db)
+
+    # Determine priority based on keywords (simple logic)
+    priority = TicketPriority.medium
+    # You can add more sophisticated priority detection here
+
+    ticket = queue_service.create_ticket_for_chat(
+        chat_id=chat.id,
+        priority=priority,
+        auto_assign=True  # Auto-assign to available agent
+    )
+
+    logger.info(f"Created ticket {ticket.id} for chat {chat.id} with priority {priority.value}")
+
+    if ticket.assigned_agent_id:
+        logger.info(f"Auto-assigned ticket {ticket.id} to agent {ticket.assigned_agent_id}")
+    else:
+        logger.warning(f"No available agent for ticket {ticket.id}, staying in queue")
+
+
 @router.post("/webhook/whapi")
 @router.post("/webhook/whapi/messages")  # WHAPI sends to /messages endpoint
 async def whapi_webhook(
@@ -156,7 +192,8 @@ async def whapi_webhook(
 
     # Check chat mode from database
     if chat.mode == ChatMode.agent:
-        # In agent mode - don't send bot reply
+        # In agent mode - ensure ticket exists and is assigned
+        ensure_ticket_exists(db, chat)
         logger.info(f"Chat {chat.id} is in agent mode, skipping bot reply")
         return {"status": "ok", "mode": "agent", "chat_id": chat.id}
 
@@ -166,9 +203,14 @@ async def whapi_webhook(
         return {"status": "ok", "mode": "paused", "chat_id": chat.id}
 
     if chat.mode == ChatMode.closed:
-        # Closed chat - don't send bot reply
-        logger.info(f"Chat {chat.id} is closed, skipping bot reply")
-        return {"status": "ok", "mode": "closed", "chat_id": chat.id}
+        # Closed chat - customer is starting a new conversation
+        # Reset chat to bot mode so it re-enters the ticket queue
+        logger.info(f"Chat {chat.id} was closed, resetting to bot mode for new conversation")
+        chat.mode = ChatMode.bot
+        # Note: assigned_agent_id is already NULL from when it was closed
+        db.commit()
+        db.refresh(chat)
+        # Continue to bot reply below (fall through to bot mode handling)
 
     # Bot mode - generate and send reply
     try:
