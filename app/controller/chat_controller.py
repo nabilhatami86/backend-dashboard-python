@@ -1,5 +1,5 @@
 from fastapi import HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import desc
 from app.models.chat import Chat, ChatMode
 from app.models.message import Message, MessageSender, MessageStatus
@@ -10,7 +10,8 @@ from app.schemas.chat_schema import (
     ChatResponse,
     ChatListResponse,
     MessageResponse,
-    CustomerProfile
+    CustomerProfile,
+    AssignedAgentInfo
 )
 from datetime import datetime
 from typing import List
@@ -25,7 +26,9 @@ def get_all_chats(db: Session, user_id: int = None, user_role: str = None) -> Li
 
     Agents must claim tickets from the queue first before they can see them here.
     """
-    query = db.query(Chat).order_by(desc(Chat.last_message_at))
+    query = db.query(Chat).options(
+        joinedload(Chat.assigned_agent)
+    ).order_by(desc(Chat.last_message_at))
 
     # TICKET QUEUE SYSTEM: Agent can only see their assigned chats
     if user_role == "agent" and user_id:
@@ -35,6 +38,13 @@ def get_all_chats(db: Session, user_id: int = None, user_role: str = None) -> Li
 
     result = []
     for chat in chats:
+        assigned_agent = None
+        if chat.assigned_agent:
+            assigned_agent = AssignedAgentInfo(
+                id=chat.assigned_agent.id,
+                name=chat.assigned_agent.name
+            )
+
         result.append(ChatListResponse(
             id=chat.id,
             name=chat.customer_name,
@@ -42,7 +52,8 @@ def get_all_chats(db: Session, user_id: int = None, user_role: str = None) -> Li
             online=chat.online,
             unread=chat.unread_count,
             mode=chat.mode.value,
-            last_message_at=chat.last_message_at
+            last_message_at=chat.last_message_at,
+            assigned_agent=assigned_agent
         ))
 
     return result

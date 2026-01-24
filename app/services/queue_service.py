@@ -3,7 +3,7 @@ Queue Service - Ticket Assignment & Queue Management
 Handles automatic assignment of tickets to agents using FCFS (First Come First Serve)
 """
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_, or_, func
 from datetime import datetime
 from typing import Optional, List
@@ -336,7 +336,10 @@ class QueueService:
             TicketPriority.low: 4
         }
 
-        tickets = self.db.query(Ticket).filter(
+        tickets = self.db.query(Ticket).options(
+            joinedload(Ticket.assigned_agent),
+            joinedload(Ticket.chat)
+        ).filter(
             Ticket.status == TicketStatus.pending
         ).order_by(
             Ticket.priority,  # Will use enum order

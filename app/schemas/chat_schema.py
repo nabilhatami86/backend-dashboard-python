@@ -86,6 +86,14 @@ class ChatResponse(BaseModel):
         from_attributes = True
 
 
+class AssignedAgentInfo(BaseModel):
+    id: int
+    name: str
+
+    class Config:
+        from_attributes = True
+
+
 class ChatListResponse(BaseModel):
     id: int
     name: str
@@ -94,6 +102,7 @@ class ChatListResponse(BaseModel):
     unread: int
     mode: str
     last_message_at: datetime
+    assigned_agent: Optional[AssignedAgentInfo] = None
 
     class Config:
         from_attributes = True

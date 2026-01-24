@@ -4,7 +4,7 @@ Endpoints untuk manage tickets, queue, dan assignment
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime
@@ -116,7 +116,10 @@ def get_my_tickets(
     Get tickets assigned to current agent
     Filter by status if provided
     """
-    query = db.query(Ticket).filter(Ticket.assigned_agent_id == current_user.id)
+    query = db.query(Ticket).options(
+        joinedload(Ticket.assigned_agent),
+        joinedload(Ticket.chat)
+    ).filter(Ticket.assigned_agent_id == current_user.id)
 
     if status:
         query = query.filter(Ticket.status == status)
@@ -144,7 +147,10 @@ def get_all_tickets(
             detail="Only admins can view all tickets"
         )
 
-    query = db.query(Ticket)
+    query = db.query(Ticket).options(
+        joinedload(Ticket.assigned_agent),
+        joinedload(Ticket.chat)
+    )
 
     if status:
         query = query.filter(Ticket.status == status)

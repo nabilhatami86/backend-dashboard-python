@@ -90,6 +90,7 @@ def _generate_ai_reply(user: str, message: str) -> str:
         # Default generic support response
         return (
             "Terima kasih pesannya. Admin support akan segera membantu Anda. "
+            "Untuk bantuan lebih cepat, ketik 'agent' untuk terhubung langsung dengan admin."
         )
 
 

@@ -26,11 +26,12 @@ def get_or_create_chat(db: Session, phone: str, name: str = None) -> Chat:
 
         # Update name if provided and more descriptive than current name
         if name:
-            # Update if current name is phone number, generic name, or test name
+            # Update if current name is phone number, generic name, LID format, or test name
             should_update = (
                 not chat.customer_name or
                 "@c.us" in chat.customer_name or
                 "@g.us" in chat.customer_name or
+                "@lid" in chat.customer_name or  # LID format
                 chat.customer_name.startswith("628") or
                 "Test" in chat.customer_name
             )
@@ -44,9 +45,13 @@ def get_or_create_chat(db: Session, phone: str, name: str = None) -> Chat:
         return chat
 
     # Create new chat
-    # Extract name from phone if not provided
+    # For LID format, prefer pushName as display name
     if not name:
-        name = phone.replace("@c.us", "").replace("@g.us", "")
+        if "@lid" in phone:
+            # LID format - use a placeholder, will be updated when pushName is received
+            name = f"Customer ({phone.split('@')[0][:8]}...)"
+        else:
+            name = phone.replace("@c.us", "").replace("@g.us", "")
 
     new_chat = Chat(
         customer_name=name,
@@ -147,6 +152,7 @@ def ensure_ticket_exists(db: Session, chat: Chat) -> None:
 
 @router.post("/webhook/whapi")
 @router.post("/webhook/whapi/messages")  # WHAPI sends to /messages endpoint
+@router.post("/webhook/baileys")  # Baileys service sends to this endpoint
 async def whapi_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -190,11 +196,42 @@ async def whapi_webhook(
     # Save customer message to database
     save_customer_message(db, chat, text)
 
+    # Check if customer is requesting agent (keyword: "agent")
+    text_lower = text.strip().lower()
+    if text_lower == "agent" and chat.mode == ChatMode.bot:
+        # Switch to agent mode
+        chat.mode = ChatMode.agent
+        db.commit()
+        db.refresh(chat)
+        logger.info(f"Chat {chat.id} switched to agent mode by customer request")
+
+        # Create ticket for agent pickup
+        ensure_ticket_exists(db, chat)
+
+        # Send confirmation to customer
+        confirmation = "Baik, Anda akan terhubung dengan agent kami. Mohon tunggu sebentar."
+        save_bot_reply(db, chat, confirmation)
+        background_tasks.add_task(send_text, sender, confirmation)
+
+        return {
+            "status": "ok",
+            "mode": "agent",
+            "chat_id": chat.id,
+            "message": "Switched to agent mode, ticket created"
+        }
+
     # Check chat mode from database
     if chat.mode == ChatMode.agent:
         # In agent mode - ensure ticket exists and is assigned
         ensure_ticket_exists(db, chat)
         logger.info(f"Chat {chat.id} is in agent mode, skipping bot reply")
+
+        # If customer typed "agent" again, send confirmation
+        if text_lower == "agent":
+            confirmation = "Anda sudah terhubung ke agent. Mohon tunggu balasan."
+            save_bot_reply(db, chat, confirmation)
+            background_tasks.add_task(send_text, sender, confirmation)
+
         return {"status": "ok", "mode": "agent", "chat_id": chat.id}
 
     if chat.mode == ChatMode.paused:

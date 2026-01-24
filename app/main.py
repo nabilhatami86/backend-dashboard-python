@@ -2,16 +2,17 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import text, inspect
-from app.whapi.webhook import router as whapi_router
-import os
 from datetime import datetime
+import os
 
 from app.config.database import engine, Base
 from app.config.deps import get_db
 from app.config.config import DB_HOST, DB_PORT, DB_NAME, DB_USER
-from app.routes import auth, chat, users, admin_chat, tickets, agent_chat
 
-# Import models to ensure they're registered with Base
+from app.routes import auth, chat, users, admin_chat, tickets, agent_chat
+from app.whapi.webhook import router as whapi_router
+
+# Import models to register with SQLAlchemy
 from app.models.user import User
 from app.models.chat import Chat
 from app.models.message import Message
@@ -21,113 +22,155 @@ from app.models.agent_profile import AgentProfile
 from app.models.queue_assignment import QueueAssignment
 from app.models.agent_metrics import AgentMetrics
 
-# create tables
+# Create tables
 Base.metadata.create_all(bind=engine)
 
+# =========================================================
+# APP CONFIGURATION
+# =========================================================
+APP_NAME = "Dashboard API"
+APP_VERSION = "0.1.0"
+ENV = os.getenv("NODE_ENV", "development")
+PORT = os.getenv("PORT", "8000")
 
 app = FastAPI(
-    title="Dashboard API",
-    version="0.1.0"
+    title=APP_NAME,
+    version=APP_VERSION,
 )
 
-# CORS Configuration
+# =========================================================
+# CORS
+# =========================================================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8888",
+        "http://127.0.0.1:8888",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# =========================================================
+# HELPER FUNCTIONS
+# =========================================================
+def section(title: str):
+    print("\n" + "─" * 80)
+    print(title)
+    print("─" * 80)
 
+def mask(value: str):
+    if not value:
+        return "Not Set"
+    return "****" + value[-4:] if len(value) > 4 else "****"
+
+# =========================================================
+# STARTUP DASHBOARD (PROFESSIONAL)
+# =========================================================
 @app.on_event("startup")
-def startup_db_check():
-    print("\n" + "="*80)
-    print("🚀 DASHBOARD API STARTUP INFO")
-    print("="*80)
+def startup_dashboard():
+    base_url = f"http://localhost:{PORT}"
 
-    # Time info
-    print(f"⏰ Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("\033[36m" + """
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                                                                              ║
+║   ██████╗  █████╗ ███████╗██╗  ██╗██████╗  █████╗ ██████╗ ██████╗            ║
+║   ██╔══██╗██╔══██╗██╔════╝██║  ██║██╔══██╗██╔══██╗██╔══██╗██╔══██╗           ║
+║   ██║  ██║███████║███████╗███████║██████╔╝███████║██████╔╝██║  ██║           ║
+║   ██║  ██║██╔══██║╚════██║██╔══██║██╔══██╗██╔══██║██╔══██╗██║  ██║           ║
+║   ██████╔╝██║  ██║███████║██║  ██║██████╔╝██║  ██║██║  ██║██████╔╝           ║
+║   ╚═════╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝            ║
+║                                                                              ║
+║              🚀  D A S H B O A R D   A P I   S T A R T U P                   ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+""" + "\033[0m")
+    # APP INFO
+    section("🚀 APPLICATION INFO")
+    print(f"📦 App        : {APP_NAME}")
+    print(f"📌 Version    : {APP_VERSION}")
+    print(f"🌎 Environment: {ENV}")
+    print(f"⏰ Started at : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"📂 Workdir    : {os.getcwd()}")
 
-    # Project info
-    print(f"\n📦 Project: Dashboard API v0.1.0")
-    print(f"📂 Working Directory: {os.getcwd()}")
+    # DATABASE
+    section("🗄️ DATABASE")
+    print(f"   Type       : PostgreSQL")
+    print(f"   Host       : {DB_HOST}")
+    print(f"   Port       : {DB_PORT}")
+    print(f"   Database   : {DB_NAME}")
+    print(f"   User       : {DB_USER}")
 
-    # Database info
-    print(f"\n🗄️  DATABASE CONNECTION:")
-    print(f"   ├─ Host: {DB_HOST}")
-    print(f"   ├─ Port: {DB_PORT}")
-    print(f"   ├─ Database: {DB_NAME}")
-    print(f"   ├─ User: {DB_USER}")
-    print(f"   └─ Type: PostgreSQL")
-
-    # Test connection
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-
-            # Get table count
             inspector = inspect(engine)
             tables = inspector.get_table_names()
 
-        print(f"   ✅ Status: CONNECTED")
-        print(f"   📊 Total Tables: {len(tables)}")
-        print(f"   📋 Tables: {', '.join(tables)}")
+        print(f"   Status     : CONNECTED")
+        print(f"   Tables     : {len(tables)}")
+        for table in tables:
+            print(f"   ├─ {table}")
 
     except Exception as e:
-        print(f"   ❌ Status: CONNECTION FAILED")
-        print(f"   ⚠️  Error: {e}")
+        print(f"   Status     : FAILED")
+        print(f"   Error      : {e}")
 
-    # Models info
-    print(f"\n📚 LOADED MODELS ({len(Base.metadata.tables)}):")
-    for table_name in Base.metadata.tables.keys():
-        print(f"   ├─ {table_name}")
+    # MODELS
+    section(f"📚 MODELS LOADED ({len(Base.metadata.tables)})")
+    for model in Base.metadata.tables.keys():
+        print(f"   ├─ {model}")
 
-    # Routes info
-    print(f"\n🛣️  API ROUTES:")
+    # ROUTES
+    section("🛣️ API ROUTES")
     routes = [
-        ("Auth", "/api/auth", ["login", "register", "logout"]),
-        ("Chat", "/api/chats", ["list", "create", "update", "delete"]),
-        ("Users", "/api/users", ["list", "profile", "update"]),
-        ("Admin Chat", "/api/admin/chats", ["list", "assign", "messages"]),
-        ("Tickets", "/api/tickets", ["list", "stats", "create", "update"]),
-        ("Agent Chat", "/api/agent/chats", ["queue", "claim", "messages"]),
-        ("WhatsApp", "/api/webhook", ["whapi webhook handler"]),
+        ("Auth", "/api/auth"),
+        ("Chat", "/api/chats"),
+        ("Users", "/api/users"),
+        ("Admin Chat", "/api/admin/chats"),
+        ("Tickets", "/api/tickets"),
+        ("Agent Chat", "/api/agent/chats"),
+        ("WhatsApp", "/api/webhook"),
     ]
+    for name, path in routes:
+        print(f"   ├─ {name.ljust(12)} → {path}")
 
-    for name, path, endpoints in routes:
-        print(f"   ├─ {name:12} → {path:20} ({', '.join(endpoints)})")
+    # CORS
+    section("🌐 CORS")
+    print("   Origins    : http://localhost:3000, http://127.0.0.1:3000")
+    print("   Credentials: Enabled")
+    print("   Methods    : All")
+    print("   Headers    : All")
 
-    # CORS info
-    print(f"\n🌐 CORS CONFIGURATION:")
-    print(f"   ├─ Allowed Origins: http://localhost:3000, http://127.0.0.1:3000")
-    print(f"   ├─ Credentials: Enabled")
-    print(f"   ├─ Methods: All")
-    print(f"   └─ Headers: All")
+    # DOCUMENTATION
+    section("📘 API DOCUMENTATION")
+    print(f"   Swagger UI : {base_url}/docs")
+    print(f"   ReDoc     : {base_url}/redoc")
+    print(f"   OpenAPI   : {base_url}/openapi.json")
 
-    # Environment
-    print(f"\n🔧 ENVIRONMENT:")
+    # ENVIRONMENT
+    section("🔧 ENVIRONMENT")
     env_vars = [
         "DB_HOST", "DB_PORT", "DB_NAME", "DB_USER",
         "SECRET_KEY", "WHAPI_TOKEN", "WHAPI_URL"
     ]
     for var in env_vars:
         value = os.getenv(var)
-        if value:
-            if var in ["DB_PASSWORD", "SECRET_KEY", "WHAPI_TOKEN"]:
-                display = "***" + value[-4:] if len(value) > 4 else "****"
-            else:
-                display = value
-            print(f"   ├─ {var}: {display}")
+        if var in ["SECRET_KEY", "WHAPI_TOKEN"]:
+            print(f"   ├─ {var.ljust(12)} : {mask(value)}")
         else:
-            print(f"   ├─ {var}: Not Set")
+            print(f"   ├─ {var.ljust(12)} : {value or 'Not Set'}")
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("✅ APPLICATION READY")
-    print("="*80 + "\n")
+    print("=" * 80 + "\n")
 
-
-# routes
+# =========================================================
+# ROUTES
+# =========================================================
 app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(users.router)
@@ -136,11 +179,12 @@ app.include_router(tickets.router)
 app.include_router(agent_chat.router)
 app.include_router(whapi_router)
 
-
+# =========================================================
+# HEALTH ENDPOINTS
+# =========================================================
 @app.get("/", tags=["Health"])
 def health_check():
     return {"status": "ok"}
-
 
 @app.get("/db-connect", tags=["Health"])
 def db_connect(db: Session = Depends(get_db)):
