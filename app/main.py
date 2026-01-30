@@ -41,15 +41,23 @@ app = FastAPI(
 # =========================================================
 # CORS
 # =========================================================
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
+# Development: Allow all origins
+# Production: Restrict to specific origins
+if ENV == "production":
+    allowed_origins = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "http://localhost:8888",
         "http://127.0.0.1:8888",
-    ],
-    allow_credentials=True,
+    ]
+else:
+    # Development: Allow all origins
+    allowed_origins = ["*"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True if ENV == "production" else False,  # Can't use credentials with allow_origins=["*"]
     allow_methods=["*"],
     allow_headers=["*"],
 )

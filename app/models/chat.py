@@ -27,6 +27,10 @@ class Chat(Base):
     customer_email = Column(String, nullable=True)
     customer_address = Column(String, nullable=True)
 
+    # Group information (for WhatsApp group messages)
+    group_id = Column(String, nullable=True)  # WhatsApp group JID (e.g., 120363423035678646@g.us)
+    group_name = Column(String, nullable=True)  # Group name for display
+
     channel = Column(Enum(ChatChannel, name="chat_channel"), nullable=False, default=ChatChannel.whatsapp)
     mode = Column(Enum(ChatMode, name="chat_mode"), nullable=False, default=ChatMode.bot)
 

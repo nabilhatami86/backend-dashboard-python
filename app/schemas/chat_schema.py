@@ -81,6 +81,9 @@ class ChatResponse(BaseModel):
     mode: str
     profile: CustomerProfile
     messages: List[MessageResponse]
+    # Group information (for WhatsApp group chats)
+    group_id: Optional[str] = None
+    group_name: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -103,6 +106,9 @@ class ChatListResponse(BaseModel):
     mode: str
     last_message_at: datetime
     assigned_agent: Optional[AssignedAgentInfo] = None
+    # Group information (for WhatsApp group chats)
+    group_id: Optional[str] = None
+    group_name: Optional[str] = None
 
     class Config:
         from_attributes = True

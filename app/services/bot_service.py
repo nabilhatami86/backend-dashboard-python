@@ -15,10 +15,15 @@ def _load_admins() -> set:
 ADMINS = _load_admins()
 
 
-def _generate_ai_reply(user: str, message: str) -> str:
+def _generate_ai_reply(user: str, message: str, is_group: bool = False) -> str:
     """Generate a reply using an external AI provider if available.
 
     Falls back to smart keyword-based responses for Warung Madura agent support.
+
+    Args:
+        user: User identifier
+        message: Message content
+        is_group: True if message from group, False if private chat
     """
     try:
         import openai
@@ -27,10 +32,11 @@ def _generate_ai_reply(user: str, message: str) -> str:
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY not set")
         openai.api_key = api_key
+        context = "grup WhatsApp" if is_group else "chat pribadi"
         prompt = (
             "You are a support assistant for Warung Madura agents. "
             "Agents may report issues about stock, payments, system errors, deliveries, or ask questions. "
-            "Reply concisely, supportively, and professionally in Bahasa Indonesia. "
+            f"Reply concisely, supportively, and professionally in Bahasa Indonesia via {context}. "
             f"Agent message: \"{message}\""
         )
         resp = openai.ChatCompletion.create(
@@ -87,11 +93,8 @@ def _generate_ai_reply(user: str, message: str) -> str:
                 "dan membantu menyelesaikan masalah ini."
             )
 
-        # Default generic support response
-        return (
-            "Terima kasih pesannya. Admin support akan segera membantu Anda. "
-            "Untuk bantuan lebih cepat, ketik 'agent' untuk terhubung langsung dengan admin."
-        )
+        # Default generic support response (same for both group and private)
+        return "Terima kasih, pesan Anda telah kami terima. Admin akan segera membantu."
 
 
 def handle_bot(user: str, message: str) -> Optional[str]:
@@ -99,10 +102,15 @@ def handle_bot(user: str, message: str) -> Optional[str]:
 
     Behavior:
     - If sender is an admin and sends management commands, adjust state.
-    - If user is in `AGENT` or `PAUSE`, return None to indicate no bot reply.
+    - PRIVATE CHAT (user without @g.us): ALWAYS generate AI reply (bot tidak pernah di-skip untuk private)
+    - GROUP CHAT (user with @g.us): If user is in `AGENT` or `PAUSE`, return None to indicate no bot reply.
     - Otherwise, generate AI reply (or canned fallback).
     """
     msg = message.strip()
+    is_private = not user.endswith("@g.us")  # Private if NOT ending with @g.us
+    
+    print(f"[BOT SERVICE] user={user} is_private={is_private} msg='{msg[:50]}'")  # DEBUG
+    
     # admin commands: assign/unassign/reply
     if user in ADMINS:
         parts = msg.split(maxsplit=2)
@@ -124,9 +132,25 @@ def handle_bot(user: str, message: str) -> Optional[str]:
             return f"__ADMIN_REPLY__|{target}|{text}"
         # admins don't receive AI replies
         return None
-
+    
+    # ✅ PRIVATE CHAT: ALWAYS process bot, skip state/command checks
+    if is_private:
+        # Private messages bypass the state machine - always generate AI reply
+        # Check if human recently replied (still apply 1-hour window)
+        last = last_human_reply.get(user)
+        if last and time.time() - last < 60 * 60:  # 1 hour window
+            # do not auto-reply when human recently handled
+            print(f"[BOT SERVICE] PRIVATE: Skipping (human replied recently)")  # DEBUG
+            return None
+        # Always generate AI reply for private (is_group=False)
+        reply = _generate_ai_reply(user, message, is_group=False)
+        print(f"[BOT SERVICE] PRIVATE: Generated reply='{reply[:50] if reply else None}'")  # DEBUG
+        return reply
+    
+    # ✅ GROUP CHAT: Apply state machine
     state = user_state.get(user, "BOT")
     lower = msg.lower()
+    print(f"[BOT SERVICE] GROUP: state={state} lower='{lower[:30]}'")  # DEBUG
     if lower == "agent":
         user_state[user] = "AGENT"
         return None
@@ -138,13 +162,17 @@ def handle_bot(user: str, message: str) -> Optional[str]:
         return "Bot diaktifkan kembali."
 
     if state in ["AGENT", "PAUSE"]:
+        print(f"[BOT SERVICE] GROUP: Skipping (state={state})")  # DEBUG
         return None
 
     # if a human recently replied for this user, prefer human flow (no AI)
     last = last_human_reply.get(user)
     if last and time.time() - last < 60 * 60:  # 1 hour window
         # do not auto-reply when human recently handled
+        print(f"[BOT SERVICE] GROUP: Skipping (human replied recently)")  # DEBUG
         return None
 
-    # generate AI reply
-    return _generate_ai_reply(user, message)
+    # generate AI reply for group (is_group=True)
+    reply = _generate_ai_reply(user, message, is_group=True)
+    print(f"[BOT SERVICE] GROUP: Generated reply='{reply[:50] if reply else None}'")  # DEBUG
+    return reply

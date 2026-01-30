@@ -5,7 +5,10 @@ from app.config.confiq_whapi import settings
 logger = logging.getLogger(__name__)
 
 
-def send_text_via_baileys(to: str, text: str) -> dict:
+def send_text_via_baileys(to: str, text: str, mentions: list | None = None) -> dict:
+    if settings.BAILEYS_SERVICE_URL is None or settings.BAILEYS_API_KEY is None:
+        logger.error("Baileys service URL or API key is not configured")
+        return {"ok": False, "error": "Baileys service not configured"}
     """Send message via Baileys service"""
     url = f"{settings.BAILEYS_SERVICE_URL}/send"
     headers = {
@@ -13,6 +16,8 @@ def send_text_via_baileys(to: str, text: str) -> dict:
         "x-api-key": settings.BAILEYS_API_KEY,
     }
     payload = {"to": to, "text": text}
+    if mentions:
+        payload["mentions"] = mentions
 
     try:
         resp = requests.post(url, json=payload, headers=headers, timeout=15)
@@ -50,12 +55,12 @@ def send_text_via_whapi(to: str, text: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def send_text(to: str, text: str) -> dict:
+def send_text(to: str, text: str, mentions: list | None = None) -> dict:
     """
     Send WhatsApp message using configured provider.
     Provider is set via WA_PROVIDER env var: "baileys" or "whapi"
     """
     if settings.WA_PROVIDER == "baileys":
-        return send_text_via_baileys(to, text)
+        return send_text_via_baileys(to, text, mentions)
     else:
         return send_text_via_whapi(to, text)

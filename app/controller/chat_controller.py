@@ -53,7 +53,9 @@ def get_all_chats(db: Session, user_id: int = None, user_role: str = None) -> Li
             unread=chat.unread_count,
             mode=chat.mode.value,
             last_message_at=chat.last_message_at,
-            assigned_agent=assigned_agent
+            assigned_agent=assigned_agent,
+            group_id=chat.group_id,
+            group_name=chat.group_name
         ))
 
     return result
@@ -108,7 +110,9 @@ def get_available_tickets(db: Session) -> List[ChatResponse]:
                 notes=None,
                 lastActive=chat.last_message_at.isoformat() if chat.last_message_at else None
             ),
-            messages=message_responses
+            messages=message_responses,
+            group_id=chat.group_id,
+            group_name=chat.group_name
         ))
 
     return result
@@ -207,7 +211,9 @@ def get_chat_detail(chat_id: int, db: Session) -> ChatResponse:
         unread=chat.unread_count,
         mode=chat.mode.value,
         profile=profile,
-        messages=formatted_messages
+        messages=formatted_messages,
+        group_id=chat.group_id,
+        group_name=chat.group_name
     )
 
 
