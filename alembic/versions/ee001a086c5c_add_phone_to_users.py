@@ -20,7 +20,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    op.add_column('users', sa.Column('phone', sa.String(), nullable=True))
+    op.execute("""
+        DO $$ BEGIN
+            ALTER TABLE users ADD COLUMN phone VARCHAR;
+        EXCEPTION WHEN duplicate_column THEN NULL;
+        END $$;
+    """)
 
 
 def downgrade() -> None:

@@ -13,9 +13,9 @@ class ChatMode(enum.Enum):
 
 
 class ChatChannel(enum.Enum):
-    whatsapp = "WhatsApp"
-    telegram = "Telegram"
-    email = "Email"
+    whatsapp = "whatsapp"
+    telegram = "telegram"
+    email = "email"
 
 
 class Chat(Base):
@@ -30,6 +30,7 @@ class Chat(Base):
     # Group information (for WhatsApp group messages)
     group_id = Column(String, nullable=True)  # WhatsApp group JID (e.g., 120363423035678646@g.us)
     group_name = Column(String, nullable=True)  # Group name for display
+    last_participant_jid = Column(String, nullable=True)  # Last participant JID for auto-mention when replying
 
     channel = Column(Enum(ChatChannel, name="chat_channel"), nullable=False, default=ChatChannel.whatsapp)
     mode = Column(Enum(ChatMode, name="chat_mode"), nullable=False, default=ChatMode.bot)

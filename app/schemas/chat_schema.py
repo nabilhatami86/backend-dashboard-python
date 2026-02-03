@@ -43,6 +43,9 @@ class MessageResponse(BaseModel):
     status: MessageStatusEnum
     time: str  # formatted time
     agent_id: Optional[int] = None
+    # For group messages: info about who sent the message
+    participant_phone: Optional[str] = None
+    participant_name: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -109,6 +112,8 @@ class ChatListResponse(BaseModel):
     # Group information (for WhatsApp group chats)
     group_id: Optional[str] = None
     group_name: Optional[str] = None
+    # Last participant info (for group chats - who sent last message)
+    last_participant_name: Optional[str] = None
 
     class Config:
         from_attributes = True

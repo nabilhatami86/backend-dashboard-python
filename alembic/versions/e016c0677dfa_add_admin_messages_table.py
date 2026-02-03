@@ -20,7 +20,15 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    # Create admin_messages table using raw SQL to avoid enum creation issue
+    # Create the message_sender enum type if it doesn't already exist
+    op.execute("""
+        DO $$ BEGIN
+            CREATE TYPE message_sender AS ENUM ('customer', 'agent', 'admin');
+        EXCEPTION WHEN duplicate_object THEN NULL;
+        END $$;
+    """)
+
+    # Create admin_messages table
     op.execute("""
         CREATE TABLE IF NOT EXISTS admin_messages (
             id SERIAL PRIMARY KEY,

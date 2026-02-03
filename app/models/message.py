@@ -29,6 +29,10 @@ class Message(Base):
     agent_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     agent = relationship("User", backref="sent_messages")
 
+    # For group messages, track who sent the message (participant)
+    participant_phone = Column(String, nullable=True)  # Phone number of sender in group
+    participant_name = Column(String, nullable=True)   # Name of sender in group
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationship back to chat

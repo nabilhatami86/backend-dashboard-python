@@ -45,6 +45,17 @@ def get_all_chats(db: Session, user_id: int = None, user_role: str = None) -> Li
                 name=chat.assigned_agent.name
             )
 
+        # Get last participant name for group chats
+        last_participant_name = None
+        if chat.group_id:
+            last_customer_msg = db.query(Message).filter(
+                Message.chat_id == chat.id,
+                Message.sender == MessageSender.customer,
+                Message.participant_name != None
+            ).order_by(Message.created_at.desc()).first()
+            if last_customer_msg:
+                last_participant_name = last_customer_msg.participant_name
+
         result.append(ChatListResponse(
             id=chat.id,
             name=chat.customer_name,
@@ -55,7 +66,8 @@ def get_all_chats(db: Session, user_id: int = None, user_role: str = None) -> Li
             last_message_at=chat.last_message_at,
             assigned_agent=assigned_agent,
             group_id=chat.group_id,
-            group_name=chat.group_name
+            group_name=chat.group_name,
+            last_participant_name=last_participant_name
         ))
 
     return result
@@ -93,9 +105,13 @@ def get_available_tickets(db: Session) -> List[ChatResponse]:
                 sender=msg.sender.value,
                 status=msg.status.value,
                 time=formatted_time,
-                agent_id=msg.agent_id
+                agent_id=msg.agent_id,
+                participant_phone=msg.participant_phone,
+                participant_name=msg.participant_name
             ))
 
+        # For group chats: customer_name is already participant name (set in webhook)
+        # For private chats: customer_name is phone number or name
         result.append(ChatResponse(
             id=chat.id,
             name=chat.customer_name,
@@ -192,7 +208,9 @@ def get_chat_detail(chat_id: int, db: Session) -> ChatResponse:
             sender=msg.sender.value,
             status=msg.status.value,
             time=msg.created_at.strftime("%H:%M"),
-            agent_id=msg.agent_id
+            agent_id=msg.agent_id,
+            participant_phone=msg.participant_phone,
+            participant_name=msg.participant_name
         ))
 
     # Build customer profile
@@ -203,6 +221,7 @@ def get_chat_detail(chat_id: int, db: Session) -> ChatResponse:
         lastActive="Online" if chat.online else datetime.now().strftime("%Y-%m-%d %H:%M")
     )
 
+    # For group chats: customer_name is already participant name (set in webhook)
     return ChatResponse(
         id=chat.id,
         name=chat.customer_name,
@@ -269,19 +288,37 @@ def update_chat(chat_id: int, data: ChatUpdate, db: Session) -> ChatResponse:
     if data.mode is not None:
         chat.mode = ChatMode[data.mode.value]
 
-        # CRITICAL: When closing chat, unassign from agent and mark ticket as resolved
-        # This resets the chat so it can re-enter ticket queue
+        # CRITICAL: When closing chat, DELETE the entire chat from database
+        # Next customer message will create a completely NEW chat
         if data.mode.value == "closed":
-            chat.assigned_agent_id = None
-
-            # Mark associated ticket as resolved
+            # Delete associated ticket first
             ticket = db.query(Ticket).filter(Ticket.chat_id == chat_id).first()
             if ticket:
-                ticket.status = TicketStatus.resolved
-                ticket.resolved_at = datetime.now()
-                print(f"✅ Ticket #{ticket.id} marked as resolved for chat #{chat.id}")
+                db.delete(ticket)
+                print(f"🗑️ Deleted ticket #{ticket.id} for chat #{chat.id}")
 
-            print(f"Chat #{chat.id} closed and unassigned. Will re-enter queue on next customer message.")
+            # Delete all messages (cascade should handle this, but be explicit)
+            deleted_msg_count = db.query(Message).filter(Message.chat_id == chat_id).delete()
+            print(f"🗑️ Deleted {deleted_msg_count} messages from chat #{chat.id}")
+
+            # Delete the chat itself
+            db.delete(chat)
+            db.commit()
+            print(f"✅ Chat #{chat_id} completely deleted. Customer will get new chat on next message.")
+
+            # Return empty response (chat no longer exists)
+            return ChatResponse(
+                id=0,
+                name="Deleted",
+                channel="whatsapp",
+                online=False,
+                unread=0,
+                mode="closed",
+                profile=CustomerProfile(),
+                messages=[],
+                group_id=None,
+                group_name=None
+            )
 
     if data.assigned_agent_id is not None:
         chat.assigned_agent_id = data.assigned_agent_id
@@ -334,9 +371,38 @@ def send_message(data: MessageCreate, db: Session) -> MessageResponse:
     db.refresh(message)
 
     # If message is from agent and chat is WhatsApp, send via WhatsApp API
-    if data.sender == "agent" and chat.channel.value == "WhatsApp" and chat.customer_phone:
+    if data.sender == "agent" and chat.channel.value == "whatsapp":
         try:
-            result = send_text(chat.customer_phone, data.text)
+            # For GROUP chats: use group_id (e.g., 120363423035678646@g.us)
+            # For PRIVATE chats: use customer_phone with @c.us suffix
+            mentions = None
+            message_text = data.text
+
+            if chat.group_id:
+                target = chat.group_id  # Already in format: 120363423035678646@g.us
+                # Auto-mention the last participant who sent a message
+                if chat.last_participant_jid:
+                    mentions = [chat.last_participant_jid]
+                    # Get the last customer message to get participant name
+                    last_customer_msg = db.query(Message).filter(
+                        Message.chat_id == chat.id,
+                        Message.sender == MessageSender.customer,
+                        Message.participant_name != None
+                    ).order_by(Message.created_at.desc()).first()
+
+                    if last_customer_msg and last_customer_msg.participant_name:
+                        # Format: "@Name message" - the @mention will be linked to the JID
+                        message_text = f"@{last_customer_msg.participant_name} {data.text}"
+                        logger.info(f"Sending to GROUP: {target} mentioning: {last_customer_msg.participant_name}")
+                    else:
+                        logger.info(f"Sending to GROUP: {target} with mention (no name)")
+                else:
+                    logger.info(f"Sending to GROUP: {target} (no mention)")
+            else:
+                target = f"{chat.customer_phone}@c.us"
+                logger.info(f"Sending to PRIVATE: {target}")
+
+            result = send_text(target, message_text, mentions)
             if result.get("ok"):
                 logger.info(f"Message sent to WhatsApp for chat {chat.id}")
             else:
@@ -351,7 +417,9 @@ def send_message(data: MessageCreate, db: Session) -> MessageResponse:
         sender=message.sender.value,
         status=message.status.value,
         time=message.created_at.strftime("%H:%M"),
-        agent_id=message.agent_id
+        agent_id=message.agent_id,
+        participant_phone=message.participant_phone,
+        participant_name=message.participant_name
     )
 
 
@@ -427,7 +495,9 @@ def update_message(message_id: int, new_text: str, db: Session):
         sender=message.sender.value,
         status=message.status.value,
         time=message.created_at.strftime("%H:%M"),
-        agent_id=message.agent_id
+        agent_id=message.agent_id,
+        participant_phone=message.participant_phone,
+        participant_name=message.participant_name
     )
 
 

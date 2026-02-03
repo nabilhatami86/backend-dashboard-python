@@ -107,72 +107,106 @@ def normalize_phone(sender: str) -> str:
 # =========================
 # CHAT
 # =========================
-def get_or_create_chat(db: Session, phone: str, name: str = None, group_id: str = None, group_name: str = None) -> Chat:
+def get_or_create_chat(db: Session, phone: str, name: str = None, group_id: str = None, group_name: str = None, participant_jid: str = None, participant_phone: str = None, participant_name: str = None) -> Chat:
     """
     Get or create chat dengan row-level locking untuk prevent race condition.
     with_for_update() akan lock row ini sampai commit, jadi request lain harus tunggu.
 
-    IMPORTANT: Chat dibedakan berdasarkan phone + group_id:
-    - Pribadi: phone + group_id=NULL
-    - Grup A: phone + group_id=grup_a_jid
-    - Grup B: phone + group_id=grup_b_jid
+    IMPORTANT: Chat dibedakan berdasarkan:
+    - Pribadi: phone (group_id=NULL)
+    - Grup: group_id + participant_phone (1 chat per participant di setiap grup)
+      Ini agar setiap orang yang chat di grup jadi antrian terpisah.
 
     Args:
-        phone: Customer phone number
-        name: Customer name
+        phone: Customer phone number (untuk private)
+        name: Customer name (untuk private) atau participant name (untuk grup)
         group_id: WhatsApp group ID (e.g., 120363423035678646@g.us) if from group
         group_name: WhatsApp group name if available
+        participant_jid: Participant JID for group messages (for auto-mention)
+        participant_phone: Participant phone number (for group messages)
+        participant_name: Participant name (for group messages)
     """
-    # Lookup chat berdasarkan phone DAN group_id (agar pribadi dan grup terpisah)
-    query = db.query(Chat).filter(Chat.customer_phone == phone)
-
     if group_id:
-        # Grup: cari dengan group_id spesifik
-        query = query.filter(Chat.group_id == group_id)
+        # GRUP: Cari berdasarkan group_id + participant_phone (1 chat per participant per grup)
+        # Ini agar setiap orang di grup punya ticket terpisah
+        chat = db.query(Chat).filter(
+            Chat.group_id == group_id,
+            Chat.customer_phone == participant_phone
+        ).with_for_update().first()
+
+        if chat:
+            chat.online = True
+            chat.last_message_at = datetime.now()
+            # Update group name if provided
+            if group_name:
+                chat.group_name = group_name
+            # Update participant name if provided (might change display name)
+            if participant_name and chat.customer_name != participant_name:
+                chat.customer_name = participant_name
+                print(f"[CHAT UPDATE] Updated participant name to: {participant_name}")
+            # Update last participant JID for auto-mention
+            if participant_jid:
+                chat.last_participant_jid = participant_jid
+            db.commit()
+            db.refresh(chat)
+            return chat
+
+        # Buat chat grup baru untuk participant ini
+        new_chat = Chat(
+            customer_name=participant_name or participant_phone or f"Anggota Grup",  # Nama participant
+            customer_phone=participant_phone,  # Phone participant (bukan group ID)
+            channel=ChatChannel.whatsapp,
+            mode=ChatMode.bot,
+            online=True,
+            unread_count=0,
+            last_message_at=datetime.now(),
+            group_id=group_id,
+            group_name=group_name,
+            last_participant_jid=participant_jid,
+        )
+        print(f"[CHAT NEW] Creating new chat for participant {participant_phone} in group {group_name or group_id}")
     else:
-        # Pribadi: cari dengan group_id NULL
-        query = query.filter(Chat.group_id.is_(None))
+        # PRIBADI: Cari berdasarkan phone dengan group_id NULL
+        chat = db.query(Chat).filter(
+            Chat.customer_phone == phone,
+            Chat.group_id.is_(None)
+        ).with_for_update().first()
 
-    chat = query.with_for_update().first()
+        if chat:
+            chat.online = True
+            chat.last_message_at = datetime.now()
+            if name and chat.customer_name != name:
+                chat.customer_name = name
+            db.commit()
+            db.refresh(chat)
+            return chat
 
-    if chat:
-        chat.online = True
-        chat.last_message_at = datetime.now()
-        if name and chat.customer_name != name:
-            chat.customer_name = name
-        # Update group name if provided and changed
-        if group_name and chat.group_name != group_name:
-            chat.group_name = group_name
-        db.commit()
-        db.refresh(chat)
-        return chat
-
-    # Jika tidak ada, buat baru
-    new_chat = Chat(
-        customer_name=name or phone,
-        customer_phone=phone,
-        channel=ChatChannel.whatsapp,
-        mode=ChatMode.bot,
-        online=True,
-        unread_count=0,
-        last_message_at=datetime.now(),
-        group_id=group_id,  # Simpan group ID jika dari grup
-        group_name=group_name,  # Simpan group name jika ada
-    )
+        # Buat chat pribadi baru
+        new_chat = Chat(
+            customer_name=name or phone,
+            customer_phone=phone,
+            channel=ChatChannel.whatsapp,
+            mode=ChatMode.bot,
+            online=True,
+            unread_count=0,
+            last_message_at=datetime.now(),
+            group_id=None,
+            group_name=None,
+        )
 
     db.add(new_chat)
     try:
         db.commit()
     except IntegrityError:
         # Race condition: chat baru saja dibuat oleh request lain
-        # Rollback dan coba ambil lagi dengan filter yang sama
         db.rollback()
-        query = db.query(Chat).filter(Chat.customer_phone == phone)
         if group_id:
-            query = query.filter(Chat.group_id == group_id)
+            chat = db.query(Chat).filter(Chat.group_id == group_id).with_for_update().first()
         else:
-            query = query.filter(Chat.group_id.is_(None))
-        chat = query.with_for_update().first()
+            chat = db.query(Chat).filter(
+                Chat.customer_phone == phone,
+                Chat.group_id.is_(None)
+            ).with_for_update().first()
         return chat
 
     db.refresh(new_chat)
@@ -182,13 +216,31 @@ def get_or_create_chat(db: Session, phone: str, name: str = None, group_id: str 
 # =========================
 # MESSAGE
 # =========================
-def save_customer_message(db: Session, chat: Chat, text: str) -> Message:
+def save_customer_message(
+    db: Session,
+    chat: Chat,
+    text: str,
+    participant_phone: str = None,
+    participant_name: str = None
+) -> Message:
+    """
+    Save customer message to database.
+
+    Args:
+        db: Database session
+        chat: Chat object
+        text: Message text
+        participant_phone: Phone number of sender (for group messages)
+        participant_name: Name of sender (for group messages)
+    """
     message = Message(
         chat_id=chat.id,
         text=text,
         sender=MessageSender.customer,
         status=MessageStatus.sent,
         created_at=datetime.now(),
+        participant_phone=participant_phone,
+        participant_name=participant_name,
     )
     db.add(message)
     chat.unread_count += 1
@@ -362,26 +414,33 @@ async def whapi_webhook(
                 logger.info(f"[WEBHOOK SKIP] Group message tanpa mention dari {sender_raw}")
                 continue
 
-            # 📱 EXTRACT PHONE NUMBER
+            # 📱 EXTRACT PHONE NUMBER & PARTICIPANT INFO
             # Untuk PRIVATE: gunakan sender JID langsung
-            # Untuk GROUP: gunakan PARTICIPANT (pengirim asli), bukan group ID
-            # Ini penting agar setiap member grup punya chat/ticket sendiri
+            # Untuk GROUP: 1 chat per grup, simpan participant info di message
+            participant_phone = None
+            participant_name = None
+            participant_jid = None  # For auto-mention when replying
+
             if is_group:
                 # Ambil participant (pengirim asli di grup)
+                # participant bisa berupa JID resolved atau raw dari Baileys
                 participant_jid = msg.get("participant")
                 if not participant_jid:
                     logger.warning(f"[WEBHOOK] Group message tanpa participant JID, skip")
                     print(f"[WEBHOOK WARNING] No participant for group message")
                     continue
-                phone = normalize_phone(participant_jid)
-                print(f"[WEBHOOK] GROUP: participant={participant_jid} → phone={phone}")
-                logger.info(f"[WEBHOOK GROUP] participant={participant_jid} phone={phone} group={sender_raw}")
+                participant_phone = normalize_phone(participant_jid)
+                # Prioritas nama: participantName > pushName > phone
+                participant_name = msg.get("participantName") or msg.get("pushname") or msg.get("pushName") or participant_phone
+                phone = None  # Untuk grup, tidak pakai phone sebagai identifier
+                print(f"[WEBHOOK] GROUP: participant={participant_phone} ({participant_name}) group={sender_raw}")
+                logger.info(f"[WEBHOOK GROUP] participant={participant_phone} name={participant_name} group={sender_raw}")
             else:
                 # Private chat: gunakan sender langsung
                 phone = normalize_phone(sender_raw)
                 print(f"[WEBHOOK] PRIVATE: sender={sender_raw} → phone={phone}")
 
-            sender_name = msg.get("pushname") or msg.get("pushName") or phone
+            sender_name = msg.get("pushname") or msg.get("pushName") or (phone or participant_phone)
 
             text = (
                 msg.get("text", {}).get("body")
@@ -400,9 +459,10 @@ async def whapi_webhook(
 
             # 🔄 DEDUPLICATION: Check apakah message ini duplicate (race condition)
             msg_timestamp = msg.get("timestamp") or msg.get("messageTimestamp")
-            if message_dedup_cache.is_duplicate(phone, text, msg_timestamp):
-                print(f"[WEBHOOK SKIP] Duplicate message detected: phone={phone} text='{text[:50]}'")
-                logger.warning(f"[WEBHOOK SKIP DUPLICATE] phone={phone} text='{text[:30]}'")
+            dedup_key = participant_phone if is_group else phone  # Use participant for groups
+            if message_dedup_cache.is_duplicate(dedup_key, text, msg_timestamp):
+                print(f"[WEBHOOK SKIP] Duplicate message detected: key={dedup_key} text='{text[:50]}'")
+                logger.warning(f"[WEBHOOK SKIP DUPLICATE] key={dedup_key} text='{text[:30]}'")
                 continue  # Skip duplicate message
 
             # Hapus mention tag dari text untuk bot processing
@@ -421,14 +481,25 @@ async def whapi_webhook(
             # 📱 SIMPAN INFO GRUP jika pesan dari grup
             # Ini penting agar agent tau ticket datang dari grup mana
             group_id = sender_raw if is_group else None
-            group_name = None  # TODO: Get group name from Baileys if available
+            group_name = msg.get("groupName") if is_group else None  # Get from Baileys payload
 
             if is_group:
-                print(f"[WEBHOOK] Saving group info: group_id={group_id}")
-                logger.info(f"[WEBHOOK GROUP INFO] group_id={group_id}")
+                print(f"[WEBHOOK] Saving group info: group_id={group_id} group_name={group_name}")
+                logger.info(f"[WEBHOOK GROUP INFO] group_id={group_id} group_name={group_name}")
 
-            chat = get_or_create_chat(db, phone, sender_name, group_id=group_id, group_name=group_name)
-            save_customer_message(db, chat, text)
+            chat = get_or_create_chat(
+                db, phone, sender_name,
+                group_id=group_id,
+                group_name=group_name,
+                participant_jid=participant_jid,
+                participant_phone=participant_phone,
+                participant_name=participant_name
+            )
+            save_customer_message(
+                db, chat, text,
+                participant_phone=participant_phone,
+                participant_name=participant_name
+            )
 
             # 🎫 OTOMATIS BUAT TICKET untuk semua message customer
             ticket = get_or_create_ticket(db, chat, priority=TicketPriority.medium)
