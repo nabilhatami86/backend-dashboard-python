@@ -21,14 +21,18 @@ def get_all_chats(db: Session, user_id: int = None, user_role: str = None) -> Li
     """
     Get all chats with role-based filtering for Ticket Queue System.
 
-    - Admin: Can see ALL chats
+    - Admin: Can see ALL active chats (not closed)
     - Agent: Can ONLY see chats assigned to them (assigned_agent_id == user_id)
 
     Agents must claim tickets from the queue first before they can see them here.
+    Closed chats are filtered out - they will be reset when customer messages again.
     """
     query = db.query(Chat).options(
         joinedload(Chat.assigned_agent)
     ).order_by(desc(Chat.last_message_at))
+
+    # Filter out CLOSED chats (these have resolved tickets, waiting for customer to restart)
+    query = query.filter(Chat.mode != ChatMode.closed)
 
     # TICKET QUEUE SYSTEM: Agent can only see their assigned chats
     if user_role == "agent" and user_id:
@@ -288,36 +292,39 @@ def update_chat(chat_id: int, data: ChatUpdate, db: Session) -> ChatResponse:
     if data.mode is not None:
         chat.mode = ChatMode[data.mode.value]
 
-        # CRITICAL: When closing chat, DELETE the entire chat from database
-        # Next customer message will create a completely NEW chat
+        # CRITICAL: When closing chat, KEEP chat but mark as closed + resolve ticket
+        # This preserves ticket stats. When customer messages again, chat will be reset.
         if data.mode.value == "closed":
-            # Delete associated ticket first
+            # Mark ticket as RESOLVED (keep for statistics!)
             ticket = db.query(Ticket).filter(Ticket.chat_id == chat_id).first()
             if ticket:
-                db.delete(ticket)
-                print(f"🗑️ Deleted ticket #{ticket.id} for chat #{chat.id}")
+                ticket.status = TicketStatus.resolved
+                ticket.resolved_at = datetime.now()
+                print(f"✅ Resolved ticket #{ticket.id} for chat #{chat.id}")
 
-            # Delete all messages (cascade should handle this, but be explicit)
+            # Unassign agent so chat doesn't show in agent's list
+            chat.assigned_agent_id = None
+            chat.mode = ChatMode.closed
+
+            # Delete all messages for fresh start
             deleted_msg_count = db.query(Message).filter(Message.chat_id == chat_id).delete()
             print(f"🗑️ Deleted {deleted_msg_count} messages from chat #{chat.id}")
 
-            # Delete the chat itself
-            db.delete(chat)
             db.commit()
-            print(f"✅ Chat #{chat_id} completely deleted. Customer will get new chat on next message.")
+            print(f"✅ Chat #{chat_id} closed and resolved. Customer will get fresh chat on next message.")
 
-            # Return empty response (chat no longer exists)
+            # Return response indicating chat is closed
             return ChatResponse(
-                id=0,
-                name="Deleted",
-                channel="whatsapp",
+                id=chat.id,
+                name=chat.customer_name,
+                channel=chat.channel.value,
                 online=False,
                 unread=0,
                 mode="closed",
-                profile=CustomerProfile(),
+                profile=CustomerProfile(phone=chat.customer_phone),
                 messages=[],
-                group_id=None,
-                group_name=None
+                group_id=chat.group_id,
+                group_name=chat.group_name
             )
 
     if data.assigned_agent_id is not None:

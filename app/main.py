@@ -9,7 +9,7 @@ from app.config.database import engine, Base
 from app.config.deps import get_db
 from app.config.config import DB_HOST, DB_PORT, DB_NAME, DB_USER
 
-from app.routes import auth, chat, users, admin_chat, tickets, agent_chat
+from app.routes import auth, chat, users, admin_chat, tickets, agent_chat, shortcuts
 from app.whapi.webhook import router as whapi_router
 
 # Import models to register with SQLAlchemy
@@ -21,6 +21,7 @@ from app.models.ticket import Ticket
 from app.models.agent_profile import AgentProfile
 from app.models.queue_assignment import QueueAssignment
 from app.models.agent_metrics import AgentMetrics
+from app.models.shortcut_message import ShortcutMessage
 
 # Create tables
 Base.metadata.create_all(bind=engine)
@@ -141,6 +142,7 @@ def startup_dashboard():
         ("Admin Chat", "/api/admin/chats"),
         ("Tickets", "/api/tickets"),
         ("Agent Chat", "/api/agent/chats"),
+        ("Shortcuts", "/api/shortcuts"),
         ("WhatsApp", "/api/webhook"),
     ]
     for name, path in routes:
@@ -185,6 +187,7 @@ app.include_router(users.router)
 app.include_router(admin_chat.router)
 app.include_router(tickets.router)
 app.include_router(agent_chat.router)
+app.include_router(shortcuts.router)
 app.include_router(whapi_router)
 
 # =========================================================

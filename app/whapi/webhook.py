@@ -576,11 +576,13 @@ async def whapi_webhook(
                 
                 # Get participant JID (pengirim pesan di grup)
                 sender_jid = msg.get("participant")
-                
+
                 # Untuk private chat: reply tanpa mention
-                # Untuk group chat: reply biasa, mention via metadata
+                # Untuk group chat: tambahkan @nama di awal text + mentions array
                 if is_group:
-                    reply_text = reply  # Jangan tambah "@name", biarkan mentions handle
+                    # WhatsApp mention perlu: 1) @nama di text, 2) JID di mentions array
+                    mention_name = participant_name or participant_phone or "User"
+                    reply_text = f"@{mention_name} {reply}"
                     logger.info(f"[BOT GROUP] text='{reply_text}' mention_jid={sender_jid}")
                 else:
                     reply_text = reply  # Private: tanpa mention
