@@ -51,6 +51,13 @@ def _generate_ai_reply(user: str, message: str, is_group: bool = False) -> str:
         # Smart fallback based on keywords for Warung Madura scenarios
         msg_lower = message.lower()
 
+        # Media message keywords (image, video, document, audio, sticker)
+        if any(keyword in msg_lower for keyword in ["[image]", "[video]", "[audio]", "[document]", "[sticker]", "[media]"]):
+            return (
+                "Terima kasih, kami sudah menerima file yang Anda kirim. "
+                "Admin akan segera memeriksa dan menghubungi Anda."
+            )
+
         # Stock-related keywords
         if any(keyword in msg_lower for keyword in ["stock", "stok", "habis", "kosong", "restock", "barang"]):
             return (

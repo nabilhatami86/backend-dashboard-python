@@ -499,9 +499,18 @@ async def whapi_webhook(
 
             print(f"[WEBHOOK] Extracted text: '{text}' (type={type(text).__name__})")  # DEBUG
 
-            if not text:
-                print(f"[WEBHOOK] Skipping: text is empty/None")  # DEBUG
+            # Check if message has media (image, video, document, audio)
+            has_media = bool(msg.get("mediaBase64") and msg.get("mediaType"))
+            media_type_label = msg.get("mediaType", "").capitalize() if has_media else ""
+
+            if not text and not has_media:
+                print(f"[WEBHOOK] Skipping: text is empty/None and no media")  # DEBUG
                 continue
+
+            # If media-only message (no text/caption), use placeholder text
+            if not text and has_media:
+                text = f"[{media_type_label or 'Media'}]"
+                print(f"[WEBHOOK] Media-only message, using placeholder: '{text}'")
 
             text = text.strip()
             print(f"[WEBHOOK] After strip: '{text}' is_group={is_group}")  # DEBUG
