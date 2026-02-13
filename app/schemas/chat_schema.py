@@ -34,6 +34,10 @@ class MessageCreate(BaseModel):
     text: str
     sender: MessageSenderEnum
     agent_id: Optional[int] = None
+    # Media attachment fields
+    media_url: Optional[str] = None
+    media_type: Optional[str] = None       # "image", "video", "document", "audio"
+    media_filename: Optional[str] = None
 
 
 class MessageResponse(BaseModel):
@@ -43,6 +47,10 @@ class MessageResponse(BaseModel):
     status: MessageStatusEnum
     time: str  # formatted time
     agent_id: Optional[int] = None
+    # Media attachment fields
+    media_url: Optional[str] = None
+    media_type: Optional[str] = None
+    media_filename: Optional[str] = None
     # For group messages: info about who sent the message
     participant_phone: Optional[str] = None
     participant_name: Optional[str] = None

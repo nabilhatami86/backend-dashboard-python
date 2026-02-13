@@ -110,6 +110,9 @@ def get_available_tickets(db: Session) -> List[ChatResponse]:
                 status=msg.status.value,
                 time=formatted_time,
                 agent_id=msg.agent_id,
+                media_url=msg.media_url,
+                media_type=msg.media_type,
+                media_filename=msg.media_filename,
                 participant_phone=msg.participant_phone,
                 participant_name=msg.participant_name
             ))
@@ -213,6 +216,9 @@ def get_chat_detail(chat_id: int, db: Session) -> ChatResponse:
             status=msg.status.value,
             time=msg.created_at.strftime("%H:%M"),
             agent_id=msg.agent_id,
+            media_url=msg.media_url,
+            media_type=msg.media_type,
+            media_filename=msg.media_filename,
             participant_phone=msg.participant_phone,
             participant_name=msg.participant_name
         ))
@@ -362,7 +368,10 @@ def send_message(data: MessageCreate, db: Session) -> MessageResponse:
         text=data.text,
         sender=MessageSender[data.sender.value],
         status=MessageStatus.sent,
-        agent_id=data.agent_id if data.sender == "agent" else None
+        agent_id=data.agent_id if data.sender == "agent" else None,
+        media_url=data.media_url,
+        media_type=data.media_type,
+        media_filename=data.media_filename,
     )
 
     db.add(message)
@@ -409,7 +418,20 @@ def send_message(data: MessageCreate, db: Session) -> MessageResponse:
                 target = f"{chat.customer_phone}@c.us"
                 logger.info(f"Sending to PRIVATE: {target}")
 
-            result = send_text(target, message_text, mentions)
+            # Send media or text via WhatsApp
+            if data.media_url and data.media_type:
+                from app.whapi.client import send_media
+                result = send_media(
+                    to=target,
+                    media_url=data.media_url,
+                    media_type=data.media_type,
+                    caption=message_text if message_text else None,
+                    filename=data.media_filename,
+                    mentions=mentions,
+                )
+            else:
+                result = send_text(target, message_text, mentions)
+
             if result.get("ok"):
                 logger.info(f"Message sent to WhatsApp for chat {chat.id}")
             else:
@@ -425,6 +447,9 @@ def send_message(data: MessageCreate, db: Session) -> MessageResponse:
         status=message.status.value,
         time=message.created_at.strftime("%H:%M"),
         agent_id=message.agent_id,
+        media_url=message.media_url,
+        media_type=message.media_type,
+        media_filename=message.media_filename,
         participant_phone=message.participant_phone,
         participant_name=message.participant_name
     )
@@ -503,6 +528,9 @@ def update_message(message_id: int, new_text: str, db: Session):
         status=message.status.value,
         time=message.created_at.strftime("%H:%M"),
         agent_id=message.agent_id,
+        media_url=message.media_url,
+        media_type=message.media_type,
+        media_filename=message.media_filename,
         participant_phone=message.participant_phone,
         participant_name=message.participant_name
     )

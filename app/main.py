@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy import text, inspect
 from datetime import datetime
@@ -177,6 +178,13 @@ def startup_dashboard():
     print("\n" + "=" * 80)
     print("✅ APPLICATION READY")
     print("=" * 80 + "\n")
+
+# =========================================================
+# STATIC FILES (uploads)
+# =========================================================
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 # =========================================================
 # ROUTES

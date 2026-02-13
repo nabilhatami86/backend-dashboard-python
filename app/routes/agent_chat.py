@@ -14,7 +14,7 @@ from app.models.user import User, UserRole
 from app.models.chat import Chat, ChatMode
 from app.models.message import Message, MessageSender, MessageStatus
 from app.models.ticket import Ticket, TicketStatus
-from app.whapi.client import send_text
+from app.whapi.client import send_text, send_media
 from app.models.agent_profile import AgentProfile
 
 router = APIRouter(prefix="/agent/chats", tags=["agent-chat"])
@@ -24,6 +24,9 @@ router = APIRouter(prefix="/agent/chats", tags=["agent-chat"])
 class SendMessageRequest(BaseModel):
     chat_id: int
     text: str
+    media_url: Optional[str] = None
+    media_type: Optional[str] = None
+    media_filename: Optional[str] = None
 
 
 class MessageResponse(BaseModel):
@@ -33,6 +36,9 @@ class MessageResponse(BaseModel):
     sender: str
     status: str
     agent_id: Optional[int]
+    media_url: Optional[str] = None
+    media_type: Optional[str] = None
+    media_filename: Optional[str] = None
     created_at: datetime
 
     class Config:
@@ -173,7 +179,10 @@ def send_message_to_customer(
         sender=MessageSender.agent,
         agent_id=current_user.id,
         status=MessageStatus.sent,
-        created_at=datetime.now()
+        created_at=datetime.now(),
+        media_url=request.media_url,
+        media_type=request.media_type,
+        media_filename=request.media_filename,
     )
     db.add(message)
 
@@ -194,7 +203,14 @@ def send_message_to_customer(
     db.refresh(message)
 
     # Send to WhatsApp in background
-    background_tasks.add_task(send_text, chat.customer_phone, message_text)
+    if request.media_url and request.media_type:
+        target = f"{chat.customer_phone}@c.us"
+        background_tasks.add_task(
+            send_media, target, request.media_url, request.media_type,
+            message_text, request.media_filename, None
+        )
+    else:
+        background_tasks.add_task(send_text, chat.customer_phone, message_text)
 
     return {
         "status": "success",

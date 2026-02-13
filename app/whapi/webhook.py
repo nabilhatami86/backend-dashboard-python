@@ -2,6 +2,9 @@ from fastapi import APIRouter, Request, BackgroundTasks, HTTPException, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 import logging
+import base64
+import os
+import uuid
 from datetime import datetime
 import time
 from threading import Lock
@@ -216,12 +219,52 @@ def get_or_create_chat(db: Session, phone: str, name: str = None, group_id: str 
 # =========================
 # MESSAGE
 # =========================
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+MIMETYPE_TO_EXT = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "video/mp4": ".mp4",
+    "audio/ogg": ".ogg",
+    "audio/mpeg": ".mp3",
+    "application/pdf": ".pdf",
+    "application/msword": ".doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+}
+
+
+def save_incoming_media(media_base64: str, media_type: str, mimetype: str, filename: str = None) -> str | None:
+    """Decode base64 media and save to uploads/ directory. Returns relative URL."""
+    try:
+        data = base64.b64decode(media_base64)
+        ext = MIMETYPE_TO_EXT.get(mimetype, "")
+        if not ext and filename:
+            ext = os.path.splitext(filename)[1] or ""
+        if not ext:
+            ext = ".bin"
+        unique_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}{ext}"
+        file_path = os.path.join(UPLOAD_DIR, unique_name)
+        with open(file_path, "wb") as f:
+            f.write(data)
+        logger.info(f"[MEDIA SAVED] {unique_name} ({len(data)} bytes)")
+        return f"/uploads/{unique_name}"
+    except Exception as e:
+        logger.error(f"[MEDIA SAVE ERROR] {e}")
+        return None
+
+
 def save_customer_message(
     db: Session,
     chat: Chat,
     text: str,
     participant_phone: str = None,
-    participant_name: str = None
+    participant_name: str = None,
+    media_url: str = None,
+    media_type: str = None,
+    media_filename: str = None,
 ) -> Message:
     """
     Save customer message to database.
@@ -232,6 +275,9 @@ def save_customer_message(
         text: Message text
         participant_phone: Phone number of sender (for group messages)
         participant_name: Name of sender (for group messages)
+        media_url: URL to saved media file
+        media_type: Type of media (image, video, document, audio)
+        media_filename: Original filename
     """
     message = Message(
         chat_id=chat.id,
@@ -241,6 +287,9 @@ def save_customer_message(
         created_at=datetime.now(),
         participant_phone=participant_phone,
         participant_name=participant_name,
+        media_url=media_url,
+        media_type=media_type,
+        media_filename=media_filename,
     )
     db.add(message)
     chat.unread_count += 1
@@ -495,10 +544,33 @@ async def whapi_webhook(
                 participant_phone=participant_phone,
                 participant_name=participant_name
             )
+
+            # Handle incoming media from WhatsApp
+            incoming_media_url = None
+            incoming_media_type = None
+            incoming_media_filename = None
+
+            media_base64 = msg.get("mediaBase64")
+            media_type_raw = msg.get("mediaType")
+            media_filename_raw = msg.get("mediaFilename")
+            media_mimetype = msg.get("mediaMimetype")
+
+            if media_base64 and media_type_raw:
+                incoming_media_url = save_incoming_media(
+                    media_base64, media_type_raw, media_mimetype or "", media_filename_raw
+                )
+                if incoming_media_url:
+                    incoming_media_type = media_type_raw
+                    incoming_media_filename = media_filename_raw
+                    print(f"[WEBHOOK MEDIA] Saved incoming media: {incoming_media_url}")
+
             save_customer_message(
                 db, chat, text,
                 participant_phone=participant_phone,
-                participant_name=participant_name
+                participant_name=participant_name,
+                media_url=incoming_media_url,
+                media_type=incoming_media_type,
+                media_filename=incoming_media_filename,
             )
 
             # 🎫 OTOMATIS BUAT TICKET untuk semua message customer

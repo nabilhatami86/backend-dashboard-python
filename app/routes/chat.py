@@ -1,6 +1,10 @@
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status, UploadFile, File
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
+import os
+import uuid
+from datetime import datetime
 from app.schemas.chat_schema import (
     ChatCreate,
     ChatUpdate,
@@ -189,3 +193,66 @@ def claim_ticket_endpoint(
         )
 
     return claim_ticket(chat_id, user.get("id"), db)
+
+
+# ================= FILE UPLOAD ENDPOINT =================
+
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+ALLOWED_DOC_TYPES = {
+    "application/pdf", "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "text/plain", "application/zip",
+}
+MAX_IMAGE_SIZE = 10 * 1024 * 1024   # 10MB
+MAX_DOC_SIZE = 25 * 1024 * 1024     # 25MB
+
+
+@router.post("/upload")
+async def upload_file(
+    file: UploadFile = File(...),
+    authorization: Optional[str] = Header(None),
+):
+    """Upload a file (image or document) for chat messages"""
+    user = get_current_user(authorization)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+
+    content_type = file.content_type or ""
+    is_image = content_type in ALLOWED_IMAGE_TYPES
+    is_doc = content_type in ALLOWED_DOC_TYPES
+
+    if not is_image and not is_doc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File type not allowed: {content_type}",
+        )
+
+    # Read file content
+    content = await file.read()
+    max_size = MAX_IMAGE_SIZE if is_image else MAX_DOC_SIZE
+    if len(content) > max_size:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File too large. Max size: {max_size // (1024*1024)}MB",
+        )
+
+    # Generate unique filename
+    ext = os.path.splitext(file.filename or "file")[1] or (".jpg" if is_image else ".bin")
+    unique_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}{ext}"
+    file_path = os.path.join(UPLOAD_DIR, unique_name)
+
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    media_type = "image" if is_image else "document"
+
+    return JSONResponse({
+        "media_url": f"/uploads/{unique_name}",
+        "media_type": media_type,
+        "media_filename": file.filename or unique_name,
+    })

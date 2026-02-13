@@ -29,6 +29,11 @@ class Message(Base):
     agent_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     agent = relationship("User", backref="sent_messages")
 
+    # Media attachment fields
+    media_url = Column(String, nullable=True)       # Relative path to uploaded file
+    media_type = Column(String, nullable=True)      # "image", "video", "document", "audio"
+    media_filename = Column(String, nullable=True)  # Original filename
+
     # For group messages, track who sent the message (participant)
     participant_phone = Column(String, nullable=True)  # Phone number of sender in group
     participant_name = Column(String, nullable=True)   # Name of sender in group
