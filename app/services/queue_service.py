@@ -12,7 +12,7 @@ from app.models.ticket import Ticket, TicketStatus, TicketPriority
 from app.models.agent_profile import AgentProfile, AgentStatus
 from app.models.queue_assignment import QueueAssignment, AssignmentType
 from app.models.chat import Chat, ChatMode
-from app.models.user import User
+from app.models.user import User, UserRole
 
 
 class QueueService:
@@ -347,6 +347,89 @@ class QueueService:
         ).limit(limit).all()
 
         return tickets
+
+    def transfer_ticket(
+        self,
+        ticket_id: int,
+        from_agent_id: Optional[int],
+        to_agent_id: int,
+        reason: Optional[str] = None
+    ) -> bool:
+        """
+        Transfer ticket dari satu agent ke agent lain
+
+        Args:
+            ticket_id: ID ticket yang akan ditransfer
+            from_agent_id: ID agent yang saat ini memegang ticket
+            to_agent_id: ID agent tujuan
+            reason: Alasan transfer
+        Returns:
+            True jika berhasil
+        """
+        ticket = self.db.query(Ticket).filter(Ticket.id == ticket_id).first()
+        if not ticket:
+            return False
+
+        # Verifikasi ownership hanya jika from_agent_id diberikan dan ticket memang sudah assigned
+        if (
+            from_agent_id is not None
+            and ticket.assigned_agent_id is not None
+            and ticket.assigned_agent_id != from_agent_id
+        ):
+            return False
+
+        to_agent = self.db.query(User).filter(User.id == to_agent_id).first()
+        if not to_agent or to_agent.role != UserRole.agent:
+            return False
+
+        now = datetime.now()
+
+        # Deactivate assignment lama
+        prev_assignment = self.db.query(QueueAssignment).filter(
+            and_(
+                QueueAssignment.ticket_id == ticket.id,
+                QueueAssignment.is_active == True
+            )
+        ).first()
+        if prev_assignment:
+            prev_assignment.is_active = False
+            prev_assignment.unassigned_at = now
+
+        # Update ticket ke agent baru
+        ticket.assigned_agent_id = to_agent_id
+        ticket.status = TicketStatus.assigned
+
+        # Update chat
+        chat = self.db.query(Chat).filter(Chat.id == ticket.chat_id).first()
+        if chat:
+            chat.assigned_agent_id = to_agent_id
+
+        # Buat assignment record baru (type: transferred)
+        new_assignment = QueueAssignment(
+            ticket_id=ticket.id,
+            agent_id=to_agent_id,
+            assignment_type=AssignmentType.transferred,
+            assigned_by_id=from_agent_id,
+            assigned_at=now,
+            is_active=True,
+            reason=reason or f"Transferred by agent #{from_agent_id}"
+        )
+        self.db.add(new_assignment)
+
+        # Update stats agent baru
+        to_agent_profile = self.db.query(AgentProfile).filter(
+            AgentProfile.user_id == to_agent_id
+        ).first()
+        if to_agent_profile:
+            to_agent_profile.last_activity_at = now
+            to_agent_profile.total_tickets_handled += 1
+
+        self.db.commit()
+        return True
+
+    def get_ticket_by_chat_id(self, chat_id: int) -> Optional[Ticket]:
+        """Cari ticket berdasarkan chat_id"""
+        return self.db.query(Ticket).filter(Ticket.chat_id == chat_id).first()
 
     def resolve_ticket(self, ticket_id: int) -> bool:
         """

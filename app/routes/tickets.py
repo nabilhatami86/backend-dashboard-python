@@ -48,6 +48,11 @@ class AssignTicketRequest(BaseModel):
     reason: Optional[str] = None
 
 
+class TransferTicketRequest(BaseModel):
+    to_agent_id: int
+    reason: Optional[str] = None
+
+
 class UpdateTicketStatusRequest(BaseModel):
     status: TicketStatus
 
@@ -254,6 +259,116 @@ def assign_ticket(
     return {
         "status": "success",
         "message": f"Ticket {ticket_id} assigned to agent {request.agent_id}",
+        "ticket": ticket_to_response(ticket)
+    }
+
+
+@router.post("/{ticket_id}/transfer")
+def transfer_ticket(
+    ticket_id: int,
+    request: TransferTicketRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Agent mentransfer ticket ke agent lain.
+    Hanya agent yang saat ini memegang ticket (atau admin) yang bisa transfer.
+    """
+    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    # Permission: agent hanya bisa transfer ticket miliknya, admin bisa transfer semua
+    if current_user.role == UserRole.agent:
+        if ticket.assigned_agent_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only transfer your own assigned tickets"
+            )
+
+    if request.to_agent_id == current_user.id:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot transfer ticket to yourself"
+        )
+
+    queue_service = QueueService(db)
+    from_agent_id = ticket.assigned_agent_id
+    success = queue_service.transfer_ticket(
+        ticket_id=ticket_id,
+        from_agent_id=from_agent_id,
+        to_agent_id=request.to_agent_id,
+        reason=request.reason
+    )
+
+    if not success:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot transfer ticket (ticket not found, not assigned to you, or target agent not found)"
+        )
+
+    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+    return {
+        "status": "success",
+        "message": f"Ticket {ticket_id} transferred to agent {request.to_agent_id}",
+        "ticket": ticket_to_response(ticket)
+    }
+
+
+@router.post("/transfer-by-chat/{chat_id}")
+def transfer_ticket_by_chat(
+    chat_id: int,
+    request: TransferTicketRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Transfer ticket berdasarkan chat_id (lebih mudah digunakan dari frontend).
+    Hanya agent yang memegang chat tersebut (atau admin) yang bisa transfer.
+    """
+    from app.models.chat import Chat
+
+    chat = db.query(Chat).filter(Chat.id == chat_id).first()
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    # Permission check
+    if current_user.role == UserRole.agent:
+        if chat.assigned_agent_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only transfer chats assigned to you"
+            )
+
+    if request.to_agent_id == current_user.id:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot transfer to yourself"
+        )
+
+    queue_service = QueueService(db)
+    ticket = queue_service.get_ticket_by_chat_id(chat_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found for this chat")
+
+    from_agent_id = ticket.assigned_agent_id
+    success = queue_service.transfer_ticket(
+        ticket_id=ticket.id,
+        from_agent_id=from_agent_id,
+        to_agent_id=request.to_agent_id,
+        reason=request.reason
+    )
+
+    if not success:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot transfer ticket (target agent not found or invalid)"
+        )
+
+    db.refresh(ticket)
+    return {
+        "status": "success",
+        "message": f"Chat {chat_id} transferred to agent {request.to_agent_id}",
         "ticket": ticket_to_response(ticket)
     }
 

@@ -314,7 +314,7 @@ def update_chat(chat_id: int, data: ChatUpdate, db: Session) -> ChatResponse:
 
             # Delete all messages for fresh start
             deleted_msg_count = db.query(Message).filter(Message.chat_id == chat_id).delete()
-            print(f"🗑️ Deleted {deleted_msg_count} messages from chat #{chat.id}")
+            print(f" Deleted {deleted_msg_count} messages from chat #{chat.id}")
 
             db.commit()
             print(f"✅ Chat #{chat_id} closed and resolved. Customer will get fresh chat on next message.")

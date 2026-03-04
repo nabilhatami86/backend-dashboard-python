@@ -615,7 +615,9 @@ async def whapi_webhook(
                 # Bot BALAS jika:
                 # 1. chat.mode == 'bot' (default mode, bot aktif)
 
-                should_bot_reply = chat.mode == ChatMode.bot
+                # Private chat should always be eligible for bot processing.
+                # Group chat still follows mode gate.
+                should_bot_reply = (not is_group) or (chat.mode == ChatMode.bot)
 
                 if not should_bot_reply:
                     print(f"[BOT SKIP] chat.mode={chat.mode.value} - Skip bot, message masuk ke agent queue")
