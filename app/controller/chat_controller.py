@@ -306,6 +306,9 @@ def update_chat(chat_id: int, data: ChatUpdate, db: Session) -> ChatResponse:
             if ticket:
                 ticket.status = TicketStatus.resolved
                 ticket.resolved_at = datetime.now()
+                # Preserve which agent handled this chat before unassigning
+                if not ticket.assigned_agent_id and chat.assigned_agent_id:
+                    ticket.assigned_agent_id = chat.assigned_agent_id
                 print(f"✅ Resolved ticket #{ticket.id} for chat #{chat.id}")
 
             # Unassign agent so chat doesn't show in agent's list
@@ -314,7 +317,7 @@ def update_chat(chat_id: int, data: ChatUpdate, db: Session) -> ChatResponse:
 
             # Delete all messages for fresh start
             deleted_msg_count = db.query(Message).filter(Message.chat_id == chat_id).delete()
-            print(f" Deleted {deleted_msg_count} messages from chat #{chat.id}")
+            print(f"Deleted {deleted_msg_count} messages from chat #{chat.id}")
 
             db.commit()
             print(f"✅ Chat #{chat_id} closed and resolved. Customer will get fresh chat on next message.")
@@ -335,6 +338,14 @@ def update_chat(chat_id: int, data: ChatUpdate, db: Session) -> ChatResponse:
 
     if data.assigned_agent_id is not None:
         chat.assigned_agent_id = data.assigned_agent_id
+        # Also update the ticket so agent performance is tracked
+        from app.models.ticket import Ticket, TicketStatus
+        ticket = db.query(Ticket).filter(Ticket.chat_id == chat_id).first()
+        if ticket and ticket.status not in [TicketStatus.resolved, TicketStatus.closed]:
+            ticket.assigned_agent_id = data.assigned_agent_id
+            if ticket.status.value == "pending":
+                ticket.status = TicketStatus.assigned
+                ticket.assigned_at = datetime.now()
 
     if data.online is not None:
         chat.online = data.online
