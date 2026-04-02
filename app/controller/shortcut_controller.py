@@ -1,4 +1,5 @@
 from fastapi import HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 from app.models.shortcut_message import ShortcutMessage
 from app.models.user import User
@@ -65,17 +66,17 @@ def search_shortcuts(keyword: str, db: Session) -> List[ShortcutMessageResponse]
 def create_shortcut(
     data: ShortcutMessageCreate, user_id: int, db: Session
 ) -> ShortcutMessageResponse:
-    """Create a new shortcut message."""
-    # Check if key already exists
+    """Create a new shortcut message. Key must be unique per user."""
+    # Check if key already exists for THIS user
     existing = (
         db.query(ShortcutMessage)
-        .filter(ShortcutMessage.key == data.key)
+        .filter(ShortcutMessage.key == data.key, ShortcutMessage.created_by == user_id)
         .first()
     )
     if existing:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Shortcut with key '{data.key}' already exists",
+            detail=f"Shortcut with key '{data.key}' already exists in your shortcuts",
         )
 
     shortcut = ShortcutMessage(
@@ -114,16 +115,20 @@ def update_shortcut(
         )
 
     if data.key is not None:
-        # Check if new key conflicts with another shortcut
+        # Check if new key conflicts with another shortcut owned by same user
         existing = (
             db.query(ShortcutMessage)
-            .filter(ShortcutMessage.key == data.key, ShortcutMessage.id != shortcut_id)
+            .filter(
+                ShortcutMessage.key == data.key,
+                ShortcutMessage.id != shortcut_id,
+                ShortcutMessage.created_by == shortcut.created_by,
+            )
             .first()
         )
         if existing:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Shortcut with key '{data.key}' already exists",
+                detail=f"Shortcut with key '{data.key}' already exists in your shortcuts",
             )
         shortcut.key = data.key
 
@@ -141,6 +146,72 @@ def update_shortcut(
         .first()
     )
     return _to_response(shortcut)
+
+
+def duplicate_shortcut(
+    shortcut_id: int, user_id: int, db: Session
+) -> ShortcutMessageResponse:
+    """Duplicate another agent's shortcut into the current user's own shortcuts."""
+    source = (
+        db.query(ShortcutMessage)
+        .options(joinedload(ShortcutMessage.creator))
+        .filter(ShortcutMessage.id == shortcut_id)
+        .first()
+    )
+    if not source:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Shortcut not found",
+        )
+
+    if source.created_by == user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot duplicate your own shortcut",
+        )
+
+    # Check if user already has a shortcut with the same key
+    existing = (
+        db.query(ShortcutMessage)
+        .filter(ShortcutMessage.key == source.key, ShortcutMessage.created_by == user_id)
+        .first()
+    )
+    if existing:
+        return _to_response(existing)
+
+    new_shortcut = ShortcutMessage(
+        key=source.key,
+        values=source.values,
+        created_by=user_id,
+    )
+    db.add(new_shortcut)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        # Old global unique constraint still in DB (migration not yet run).
+        # Return existing shortcut for this user if found, else surface error.
+        existing = (
+            db.query(ShortcutMessage)
+            .options(joinedload(ShortcutMessage.creator))
+            .filter(ShortcutMessage.key == source.key, ShortcutMessage.created_by == user_id)
+            .first()
+        )
+        if existing:
+            return _to_response(existing)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Shortcut with key '{source.key}' already exists. Run alembic upgrade head to allow per-user keys.",
+        )
+    db.refresh(new_shortcut)
+
+    new_shortcut = (
+        db.query(ShortcutMessage)
+        .options(joinedload(ShortcutMessage.creator))
+        .filter(ShortcutMessage.id == new_shortcut.id)
+        .first()
+    )
+    return _to_response(new_shortcut)
 
 
 def delete_shortcut(shortcut_id: int, db: Session):

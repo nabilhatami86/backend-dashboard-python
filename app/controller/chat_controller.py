@@ -79,17 +79,15 @@ def get_all_chats(db: Session, user_id: int = None, user_role: str = None) -> Li
 
 def get_available_tickets(db: Session) -> List[ChatResponse]:
     """
-    Get all available tickets (unassigned chats) for the ticket queue.
+    Get all available tickets in the queue.
 
-    Returns chats with messages that:
-    - Have no assigned_agent_id (NULL)
-    - Are in 'bot' mode (not yet handled by agent)
-    - Ordered by last_message_at (oldest first - FIFO queue)
+    Returns chats in 'paused' mode with no assigned agent — escalated by bot,
+    waiting for an agent to claim. Ordered FIFO (oldest first).
     """
     query = db.query(Chat).filter(
+        Chat.mode == ChatMode.paused,
         Chat.assigned_agent_id == None,
-        Chat.mode == ChatMode.bot
-    ).order_by(Chat.last_message_at.asc())  # Oldest first (FIFO)
+    ).order_by(Chat.last_message_at.asc())
 
     chats = query.all()
 
@@ -172,9 +170,13 @@ def claim_ticket(chat_id: int, agent_id: int, db: Session) -> ChatResponse:
     chat.assigned_agent_id = agent_id
     chat.mode = ChatMode.agent
 
-    # Create ticket if it doesn't exist
+    # Update existing ticket or create new one
     existing_ticket = db.query(Ticket).filter(Ticket.chat_id == chat_id).first()
-    if not existing_ticket:
+    if existing_ticket:
+        existing_ticket.status = TicketStatus.in_progress
+        existing_ticket.assigned_agent_id = agent_id
+        existing_ticket.assigned_at = datetime.now()
+    else:
         new_ticket = Ticket(
             chat_id=chat_id,
             status=TicketStatus.in_progress,
@@ -183,7 +185,6 @@ def claim_ticket(chat_id: int, agent_id: int, db: Session) -> ChatResponse:
             assigned_at=datetime.now()
         )
         db.add(new_ticket)
-        print(f"✅ Created ticket for chat #{chat_id}, assigned to agent #{agent_id}")
 
     db.commit()
     db.refresh(chat)
@@ -309,18 +310,15 @@ def update_chat(chat_id: int, data: ChatUpdate, db: Session) -> ChatResponse:
                 # Preserve which agent handled this chat before unassigning
                 if not ticket.assigned_agent_id and chat.assigned_agent_id:
                     ticket.assigned_agent_id = chat.assigned_agent_id
-                print(f"✅ Resolved ticket #{ticket.id} for chat #{chat.id}")
 
             # Unassign agent so chat doesn't show in agent's list
             chat.assigned_agent_id = None
             chat.mode = ChatMode.closed
 
             # Delete all messages for fresh start
-            deleted_msg_count = db.query(Message).filter(Message.chat_id == chat_id).delete()
-            print(f"Deleted {deleted_msg_count} messages from chat #{chat.id}")
+            db.query(Message).filter(Message.chat_id == chat_id).delete()
 
             db.commit()
-            print(f"✅ Chat #{chat_id} closed and resolved. Customer will get fresh chat on next message.")
 
             # Return response indicating chat is closed
             return ChatResponse(

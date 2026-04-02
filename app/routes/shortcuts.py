@@ -13,6 +13,7 @@ from app.controller.shortcut_controller import (
     create_shortcut,
     update_shortcut,
     delete_shortcut,
+    duplicate_shortcut,
 )
 from app.config.deps import get_db
 from app.utils.jwt import decode_access_token
@@ -94,6 +95,23 @@ def update_shortcut_message(
         )
 
     return update_shortcut(shortcut_id, data, db)
+
+
+@router.post("/{shortcut_id}/duplicate", response_model=ShortcutMessageResponse)
+def duplicate_shortcut_message(
+    shortcut_id: int,
+    db: Session = Depends(get_db),
+    authorization: Optional[str] = Header(None),
+):
+    """Duplicate another agent's shortcut into current user's own shortcuts."""
+    user = get_current_user(authorization)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+        )
+
+    return duplicate_shortcut(shortcut_id, user["id"], db)
 
 
 @router.delete("/{shortcut_id}")

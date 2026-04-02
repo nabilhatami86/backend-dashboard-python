@@ -5,12 +5,22 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text, inspect
 from datetime import datetime
 import os
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s: %(name)s: %(message)s",
+)
+# Force webhook logger to show INFO regardless of uvicorn override
+logging.getLogger("app.whapi.webhook").setLevel(logging.INFO)
+logging.getLogger("app.services.bot_service").setLevel(logging.INFO)
 
 from app.config.database import engine, Base
 from app.config.deps import get_db
 from app.config.config import DB_HOST, DB_PORT, DB_NAME, DB_USER
 
 from app.routes import auth, chat, users, admin_chat, tickets, agent_chat, shortcuts
+from app.routes.ws import router as ws_router
 from app.whapi.webhook import router as whapi_router
 
 # Import models to register with SQLAlchemy
@@ -196,6 +206,7 @@ app.include_router(admin_chat.router)
 app.include_router(tickets.router)
 app.include_router(agent_chat.router)
 app.include_router(shortcuts.router)
+app.include_router(ws_router)
 app.include_router(whapi_router)
 
 # =========================================================
