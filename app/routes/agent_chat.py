@@ -16,6 +16,7 @@ from app.models.message import Message, MessageSender, MessageStatus
 from app.models.ticket import Ticket, TicketStatus
 from app.whapi.client import send_text, send_media
 from app.models.agent_profile import AgentProfile
+from app.services.ws_manager import manager as ws_manager
 
 router = APIRouter(prefix="/agent/chats", tags=["agent-chat"])
 
@@ -222,7 +223,7 @@ def send_message_to_customer(
 
 
 @router.patch("/status")
-def update_agent_status(
+async def update_agent_status(
     request: AgentStatusUpdateRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -233,16 +234,20 @@ def update_agent_status(
     if current_user.role != UserRole.agent:
         raise HTTPException(status_code=403, detail="Only agents can update status")
 
-    # Get agent profile
+    from app.models.agent_profile import AgentStatus
+
+    # Get atau auto-create agent profile jika belum ada
     agent_profile = db.query(AgentProfile).filter(
         AgentProfile.user_id == current_user.id
     ).first()
 
     if not agent_profile:
-        raise HTTPException(status_code=404, detail="Agent profile not found")
-
-    # Update status
-    from app.models.agent_profile import AgentStatus
+        agent_profile = AgentProfile(
+            user_id=current_user.id,
+            display_name=current_user.name,
+        )
+        db.add(agent_profile)
+        db.flush()
 
     try:
         agent_profile.is_available = request.is_available
@@ -251,6 +256,16 @@ def update_agent_status(
 
         db.commit()
         db.refresh(agent_profile)
+
+        # Broadcast perubahan status ke semua dashboard client secara real-time
+        await ws_manager.broadcast_global({
+            "type": "agent_status",
+            "agent_id": current_user.id,
+            "name": current_user.name,
+            "display_name": agent_profile.display_name,
+            "status": agent_profile.status.value,
+            "is_available": agent_profile.is_available,
+        })
 
         return {
             "status": "success",
@@ -264,6 +279,37 @@ def update_agent_status(
             status_code=400,
             detail=f"Invalid status. Must be one of: online, offline, busy, break_time"
         )
+
+
+@router.post("/heartbeat")
+def agent_heartbeat(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Heartbeat dari agent dashboard — memperbarui last_activity_at.
+    Dikirim setiap ~90 detik oleh frontend untuk menandakan agent masih aktif.
+    Background task akan set offline agent yang tidak kirim heartbeat > 3 menit.
+    """
+    if current_user.role != UserRole.agent:
+        raise HTTPException(status_code=403, detail="Only agents can send heartbeat")
+
+    agent_profile = db.query(AgentProfile).filter(
+        AgentProfile.user_id == current_user.id
+    ).first()
+
+    if not agent_profile:
+        # Auto-create profile jika belum ada
+        agent_profile = AgentProfile(
+            user_id=current_user.id,
+            display_name=current_user.name,
+        )
+        db.add(agent_profile)
+
+    agent_profile.last_activity_at = datetime.now()
+    db.commit()
+
+    return {"status": "ok"}
 
 
 @router.get("/status")

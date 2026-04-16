@@ -18,15 +18,6 @@ from typing import List
 
 
 def get_all_chats(db: Session, user_id: int = None, user_role: str = None) -> List[ChatListResponse]:
-    """
-    Get all chats with role-based filtering for Ticket Queue System.
-
-    - Admin: Can see ALL active chats (not closed)
-    - Agent: Can ONLY see chats assigned to them (assigned_agent_id == user_id)
-
-    Agents must claim tickets from the queue first before they can see them here.
-    Closed chats are filtered out - they will be reset when customer messages again.
-    """
     query = db.query(Chat).options(
         joinedload(Chat.assigned_agent)
     ).order_by(desc(Chat.last_message_at))
@@ -78,12 +69,6 @@ def get_all_chats(db: Session, user_id: int = None, user_role: str = None) -> Li
 
 
 def get_available_tickets(db: Session) -> List[ChatResponse]:
-    """
-    Get all available tickets in the queue.
-
-    Returns chats in 'paused' mode with no assigned agent — escalated by bot,
-    waiting for an agent to claim. Ordered FIFO (oldest first).
-    """
     query = db.query(Chat).filter(
         Chat.mode == ChatMode.paused,
         Chat.assigned_agent_id == None,
@@ -140,16 +125,11 @@ def get_available_tickets(db: Session) -> List[ChatResponse]:
 
 
 def claim_ticket(chat_id: int, agent_id: int, db: Session) -> ChatResponse:
-    """
-    Claim a ticket from the queue and assign it to an agent.
-
-    - Sets assigned_agent_id to the claiming agent
-    - Changes mode from 'bot' to 'agent'
-    - Creates ticket in tickets table for monitoring
-    - Returns the claimed chat details
-    """
     from app.models.ticket import Ticket, TicketStatus, TicketPriority
-    from datetime import datetime
+    import logging
+
+    logger = logging.getLogger(__name__)
+    now = datetime.now()
 
     chat = db.query(Chat).filter(Chat.id == chat_id).first()
 
@@ -175,14 +155,14 @@ def claim_ticket(chat_id: int, agent_id: int, db: Session) -> ChatResponse:
     if existing_ticket:
         existing_ticket.status = TicketStatus.in_progress
         existing_ticket.assigned_agent_id = agent_id
-        existing_ticket.assigned_at = datetime.now()
+        existing_ticket.assigned_at = now
     else:
         new_ticket = Ticket(
             chat_id=chat_id,
             status=TicketStatus.in_progress,
             priority=TicketPriority.medium,
             assigned_agent_id=agent_id,
-            assigned_at=datetime.now()
+            assigned_at=now
         )
         db.add(new_ticket)
 
@@ -277,15 +257,6 @@ def create_chat(data: ChatCreate, db: Session) -> ChatResponse:
 
 
 def update_chat(chat_id: int, data: ChatUpdate, db: Session) -> ChatResponse:
-    """
-    Update chat (mode, assigned agent, etc)
-
-    SPECIAL BEHAVIOR for mode = "closed":
-    - When chat is closed, it gets unassigned (assigned_agent_id = NULL)
-    - Ticket is marked as resolved with resolved_at timestamp
-    - This allows the chat to re-enter the ticket queue if customer messages again
-    - Next customer message will be handled by bot first (mode will auto-reset to "bot")
-    """
     from app.models.ticket import Ticket, TicketStatus
 
     chat = db.query(Chat).filter(Chat.id == chat_id).first()
@@ -371,6 +342,18 @@ def send_message(data: MessageCreate, db: Session) -> MessageResponse:
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chat not found"
         )
+
+    # Tambahkan tanda tangan agent otomatis ke setiap pesan agent
+    if data.sender == "agent" and data.agent_id:
+        from app.models.agent_profile import AgentProfile
+        from app.models.user import User as UserModel
+        agent_profile = db.query(AgentProfile).filter(AgentProfile.user_id == data.agent_id).first()
+        if agent_profile and agent_profile.display_name:
+            agent_display = agent_profile.display_name
+        else:
+            agent_user = db.query(UserModel).filter(UserModel.id == data.agent_id).first()
+            agent_display = agent_user.name if agent_user else f"Agent {data.agent_id}"
+        data.text = f"{data.text}\n~ {agent_display}"
 
     message = Message(
         chat_id=data.chat_id,
@@ -507,6 +490,49 @@ def delete_chat(chat_id: int, db: Session):
     db.commit()
 
     return {"message": "Chat deleted successfully"}
+
+def update_tag_chat_agent(message_id: int, new_agent_name: str, db: Session):
+    """Update the ~ Agent Name tag at the end of an agent message."""
+    message = db.query(Message).filter(Message.id == message_id).first()
+
+    if not message:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Message not found"
+        )
+
+    if message.sender != MessageSender.agent:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Can only edit agent messages"
+        )
+
+    # Replace existing ~ Tag or append new one
+    import re
+    new_tag = f"~ {new_agent_name.strip()}"
+    if re.search(r"\n~ .+$", message.text):
+        # Ganti tag yang sudah ada
+        message.text = re.sub(r"\n~ .+$", f"\n{new_tag}", message.text)
+    else:
+        # Tambahkan tag baru di akhir
+        message.text = f"{message.text}\n{new_tag}"
+
+    db.commit()
+    db.refresh(message)
+
+    return MessageResponse(
+        id=message.id,
+        text=message.text,
+        sender=message.sender.value,
+        status=message.status.value,
+        time=message.created_at.strftime("%H:%M"),
+        agent_id=message.agent_id,
+        media_url=message.media_url,
+        media_type=message.media_type,
+        media_filename=message.media_filename,
+        participant_phone=message.participant_phone,
+        participant_name=message.participant_name
+    )
 
 
 def update_message(message_id: int, new_text: str, db: Session):

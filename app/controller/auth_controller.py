@@ -1,7 +1,9 @@
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
-from app.models.user import User
+from datetime import datetime
+from app.models.user import User, UserRole
+from app.models.agent_profile import AgentProfile, AgentStatus
 from app.utils.security import hash_password, verify_password
 from app.utils.jwt import create_access_token
 from app.config_env import ACCESS_TOKEN_EXPIRE_MINUTES
@@ -71,6 +73,25 @@ def login_user(data, db: Session):
         },
         expires_minutes=ACCESS_TOKEN_EXPIRE_MINUTES
     )
+
+    # Jika user adalah agent, langsung set status online
+    if user.role == UserRole.agent:
+        agent_profile = db.query(AgentProfile).filter(
+            AgentProfile.user_id == user.id
+        ).first()
+
+        if not agent_profile:
+            # Auto-create profile jika belum ada
+            agent_profile = AgentProfile(
+                user_id=user.id,
+                display_name=user.name,
+            )
+            db.add(agent_profile)
+
+        agent_profile.status = AgentStatus.online
+        agent_profile.is_available = True
+        agent_profile.last_activity_at = datetime.now()
+        db.commit()
 
     return {
         "message": "Login success",

@@ -13,6 +13,7 @@ from app.config.deps import get_db, get_current_user
 from app.models.user import User, UserRole
 from app.models.ticket import Ticket, TicketStatus, TicketPriority
 from app.models.queue_assignment import QueueAssignment
+from app.models.agent_profile import AgentProfile, AgentStatus
 from app.services.queue_service import QueueService
 
 router = APIRouter(prefix="/tickets", tags=["tickets"])
@@ -95,6 +96,37 @@ def ticket_to_response(ticket: Ticket) -> dict:
 
 
 # Endpoints
+@router.get("/online-agents")
+def get_online_agents(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Dapatkan daftar agent yang sedang online dan available.
+    Digunakan untuk dropdown pilihan tujuan transfer chat.
+    Agent yang login tidak akan muncul dalam daftar (tidak bisa transfer ke diri sendiri).
+    """
+    profiles = db.query(AgentProfile).filter(
+        AgentProfile.status == AgentStatus.online,
+        AgentProfile.is_available == True
+    ).all()
+
+    result = []
+    for profile in profiles:
+        # Exclude diri sendiri
+        if profile.user_id == current_user.id:
+            continue
+        result.append({
+            "agent_id": profile.user_id,
+            "name": profile.user.name,
+            "display_name": profile.display_name,
+            "status": profile.status.value,
+            "is_available": profile.is_available,
+        })
+
+    return result
+
+
 @router.get("/queue", response_model=List[TicketResponse])
 def get_pending_tickets(
     limit: int = 50,
@@ -304,7 +336,7 @@ def transfer_ticket(
     if not success:
         raise HTTPException(
             status_code=400,
-            detail="Cannot transfer ticket (ticket not found, not assigned to you, or target agent not found)"
+            detail="Tidak bisa transfer ticket: agent tujuan tidak ditemukan atau sedang tidak online/available"
         )
 
     ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
@@ -362,7 +394,7 @@ def transfer_ticket_by_chat(
     if not success:
         raise HTTPException(
             status_code=400,
-            detail="Cannot transfer ticket (target agent not found or invalid)"
+            detail="Tidak bisa transfer chat: agent tujuan tidak ditemukan atau sedang tidak online/available"
         )
 
     db.refresh(ticket)

@@ -24,7 +24,8 @@ from app.controller.chat_controller import (
     update_message,
     delete_message,
     get_available_tickets,
-    claim_ticket
+    claim_ticket,
+    update_tag_chat_agent
 )
 from app.config.deps import get_db
 from app.utils.jwt import decode_access_token
@@ -148,6 +149,22 @@ def delete_message_endpoint(
 ):
     """Delete a message"""
     return delete_message(message_id, db)
+
+
+@router.patch("/messages/{message_id}/tag")
+def update_tag_endpoint(
+    message_id: int,
+    data: dict,
+    db: Session = Depends(get_db)
+):
+    """Update the ~ Agent Name tag on an agent message"""
+    new_agent_name = data.get("agent_name")
+    if not new_agent_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="agent_name is required"
+        )
+    return update_tag_chat_agent(message_id, new_agent_name, db)
 
 
 # ================= TICKET QUEUE ENDPOINTS =================

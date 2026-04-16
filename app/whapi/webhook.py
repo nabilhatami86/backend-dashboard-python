@@ -38,7 +38,6 @@ _ESCALATION_TRIGGERS = [
 
 
 def _is_escalation_reply(reply: str) -> bool:
-    """Return True jika reply dari external API menandakan eskalasi ke CS."""
     normalized = reply.lower().strip()
     return any(trigger in normalized for trigger in _ESCALATION_TRIGGERS)
 
@@ -51,10 +50,6 @@ class MessageDedupCache:
         self.ttl_seconds = ttl_seconds
 
     def is_duplicate(self, phone: str, text: str, msg_timestamp: int = None) -> bool:
-        """
-        Check apakah message ini duplicate (baru diproses dalam TTL window).
-        Return True jika duplicate (harus di-skip), False jika baru.
-        """
         # Round timestamp ke nearest second untuk group messages yang datang bersamaan
         rounded_ts = msg_timestamp // 1 if msg_timestamp else int(time.time())
         message_key = f"{phone}:{text}:{rounded_ts}"
@@ -84,12 +79,6 @@ class MessageDedupCache:
 
 # Global dedup cache instance
 message_dedup_cache = MessageDedupCache()
-
-# =========================
-# PER-CHAT PROCESSING LOCK
-# =========================
-# Lock untuk prevent concurrent bot processing pada chat yang sama
-# Jika chat sedang diproses, request lain harus tunggu
 class ChatProcessingLock:
     def __init__(self):
         self.locks = {}  # {chat_id: Lock}
@@ -128,8 +117,6 @@ def normalize_phone(sender: str) -> str:
 # =========================
 def get_or_create_chat(db: Session, phone: str, name: str = None, group_id: str = None, group_name: str = None, participant_jid: str = None, participant_phone: str = None, participant_name: str = None) -> Chat:
     if group_id:
-        # GRUP: Cari berdasarkan group_id + participant_phone (1 chat per participant per grup)
-        # Ini agar setiap orang di grup punya ticket terpisah
         chat = db.query(Chat).filter(
             Chat.group_id == group_id,
             Chat.customer_phone == participant_phone
@@ -154,7 +141,7 @@ def get_or_create_chat(db: Session, phone: str, name: str = None, group_id: str 
         # Buat chat grup baru untuk participant ini
         new_chat = Chat(
             customer_name=participant_name or participant_phone or f"Anggota Grup",  # Nama participant
-            customer_phone=participant_phone,  # Phone participant (bukan group ID)
+            customer_phone=participant_phone, 
             channel=ChatChannel.whatsapp,
             mode=ChatMode.bot,
             online=True,

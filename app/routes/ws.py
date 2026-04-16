@@ -66,6 +66,26 @@ async def _subscribe_presence(customer_jid: str):
         logger.warning(f"[WS] Failed to subscribe presence: {e}")
 
 
+@router.websocket("/ws/agents")
+async def websocket_agent_status(ws: WebSocket):
+    """
+    Global WebSocket channel untuk menerima update status agent secara real-time.
+    Frontend connect ke sini untuk mendapatkan event:
+      {"type": "agent_status", "agent_id": 1, "name": "...", "display_name": "...", "status": "online", "is_available": true}
+    """
+    await manager.connect_global(ws)
+    try:
+        while True:
+            # Koneksi ini hanya menerima event dari server, tidak mengirim
+            # Tetap buka loop agar koneksi tidak putus
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect_global(ws)
+    except Exception as e:
+        logger.exception(f"[WS-GLOBAL] Unexpected error: {e}")
+        manager.disconnect_global(ws)
+
+
 @router.websocket("/ws/{chat_id}")
 async def websocket_typing(ws: WebSocket, chat_id: int):
     # Look up customer phone/group for this chat (needed for WA presence)

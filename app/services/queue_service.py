@@ -382,6 +382,13 @@ class QueueService:
         if not to_agent or to_agent.role != UserRole.agent:
             return False
 
+        # Pastikan agent tujuan sedang online dan available
+        to_agent_profile = self.db.query(AgentProfile).filter(
+            AgentProfile.user_id == to_agent_id
+        ).first()
+        if not to_agent_profile or to_agent_profile.status != AgentStatus.online or not to_agent_profile.is_available:
+            return False
+
         now = datetime.now()
 
         # Deactivate assignment lama

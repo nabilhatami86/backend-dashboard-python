@@ -3,7 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy import text, inspect
-from datetime import datetime
+from datetime import datetime, timedelta
+import asyncio
 import os
 import logging
 
@@ -22,6 +23,8 @@ from app.config.config import DB_HOST, DB_PORT, DB_NAME, DB_USER
 from app.routes import auth, chat, users, admin_chat, tickets, agent_chat, shortcuts
 from app.routes.ws import router as ws_router
 from app.whapi.webhook import router as whapi_router
+from app.config.database import SessionLocal
+from app.services.ws_manager import manager as ws_manager
 
 # Import models to register with SQLAlchemy
 from app.models.user import User
@@ -188,6 +191,85 @@ def startup_dashboard():
     print("\n" + "=" * 80)
     print("✅ APPLICATION READY")
     print("=" * 80 + "\n")
+
+
+# =========================================================
+# AGENT ONLINE STATUS — STARTUP RESET
+# =========================================================
+@app.on_event("startup")
+def reset_all_agents_to_offline():
+    """
+    Saat server baru start, semua agent di-reset ke offline.
+    Agent harus buka dashboard lagi agar statusnya kembali online.
+    """
+    from app.models.agent_profile import AgentProfile, AgentStatus
+    db = SessionLocal()
+    try:
+        count = db.query(AgentProfile).filter(
+            AgentProfile.status == AgentStatus.online
+        ).update({
+            "status": AgentStatus.offline,
+            "is_available": False,
+        })
+        db.commit()
+        if count:
+            logging.getLogger(__name__).info(f"[STARTUP] Reset {count} agent(s) to offline")
+    except Exception as e:
+        logging.getLogger(__name__).error(f"[STARTUP] Failed to reset agents: {e}")
+    finally:
+        db.close()
+
+
+# =========================================================
+# AGENT ONLINE STATUS — STALE AGENT BACKGROUND TASK
+# =========================================================
+async def _stale_agent_checker():
+    """
+    Background task: cek setiap 2 menit.
+    Agent yang tidak kirim heartbeat > 3 menit → set offline + broadcast WS.
+    """
+    logger = logging.getLogger(__name__)
+    while True:
+        await asyncio.sleep(120)  # cek setiap 2 menit
+        try:
+            from app.models.agent_profile import AgentProfile, AgentStatus
+            from sqlalchemy import or_
+            db = SessionLocal()
+            try:
+                cutoff = datetime.now() - timedelta(minutes=3)
+                stale = db.query(AgentProfile).filter(
+                    AgentProfile.status == AgentStatus.online,
+                    or_(
+                        AgentProfile.last_activity_at == None,
+                        AgentProfile.last_activity_at < cutoff,
+                    )
+                ).all()
+
+                for profile in stale:
+                    profile.status = AgentStatus.offline
+                    profile.is_available = False
+                    await ws_manager.broadcast_global({
+                        "type": "agent_status",
+                        "agent_id": profile.user_id,
+                        "name": profile.user.name,
+                        "display_name": profile.display_name,
+                        "status": "offline",
+                        "is_available": False,
+                    })
+
+                if stale:
+                    db.commit()
+                    logger.info(f"[STALE-CHECKER] Marked {len(stale)} agent(s) offline")
+            finally:
+                db.close()
+        except Exception as e:
+            logging.getLogger(__name__).error(f"[STALE-CHECKER] Error: {e}")
+
+
+@app.on_event("startup")
+async def start_stale_agent_checker():
+    asyncio.create_task(_stale_agent_checker())
+
 
 # =========================================================
 # STATIC FILES (uploads)

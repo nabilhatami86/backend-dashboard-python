@@ -1,6 +1,7 @@
 """
 WebSocket Connection Manager
 Manages per-chat WebSocket connections for real-time events (typing indicators, etc.)
+Also manages a global channel for broadcasting agent status changes.
 """
 import logging
 from typing import Dict, Set
@@ -13,6 +14,8 @@ class ConnectionManager:
     def __init__(self):
         # {chat_id: set of active WebSocket connections}
         self.connections: Dict[int, Set[WebSocket]] = {}
+        # Global channel — untuk broadcast agent status ke semua dashboard client
+        self.global_connections: Set[WebSocket] = set()
 
     async def connect(self, ws: WebSocket, chat_id: int):
         await ws.accept()
@@ -48,6 +51,31 @@ class ConnectionManager:
 
     def has_connections(self, chat_id: int) -> bool:
         return chat_id in self.connections and bool(self.connections[chat_id])
+
+    # ── Global channel (agent status) ──────────────────────────────────────
+
+    async def connect_global(self, ws: WebSocket):
+        """Sambungkan client ke global channel (agent status)."""
+        await ws.accept()
+        self.global_connections.add(ws)
+        logger.info(f"[WS-GLOBAL] Connected total={len(self.global_connections)}")
+
+    def disconnect_global(self, ws: WebSocket):
+        self.global_connections.discard(ws)
+        logger.info(f"[WS-GLOBAL] Disconnected total={len(self.global_connections)}")
+
+    async def broadcast_global(self, data: dict):
+        """Broadcast payload ke semua client di global channel."""
+        dead: Set[WebSocket] = set()
+        for ws in list(self.global_connections):
+            try:
+                await ws.send_json(data)
+            except Exception as e:
+                logger.warning(f"[WS-GLOBAL] Send failed: {e}")
+                dead.add(ws)
+        for ws in dead:
+            self.global_connections.discard(ws)
+        logger.info(f"[WS-GLOBAL] Broadcast data={data} to {len(self.global_connections)} clients")
 
 
 # Singleton shared across the app
