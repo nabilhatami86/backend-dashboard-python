@@ -1,8 +1,3 @@
-"""
-Agent Chat Routes
-Endpoints untuk agent mengirim pesan ke customer via WhatsApp
-"""
-
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -21,7 +16,6 @@ from app.services.ws_manager import manager as ws_manager
 router = APIRouter(prefix="/agent/chats", tags=["agent-chat"])
 
 
-# Schemas
 class SendMessageRequest(BaseModel):
     chat_id: int
     text: str
@@ -67,19 +61,14 @@ class AgentStatusUpdateRequest(BaseModel):
     status: str  # online, offline, busy, break
 
 
-# Endpoints
 @router.get("/my-chats", response_model=List[ChatDetailResponse])
 def get_my_chats(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Get all chats assigned to current agent
-    """
     if current_user.role != UserRole.agent:
         raise HTTPException(status_code=403, detail="Only agents can access this endpoint")
 
-    # Get chats assigned to this agent
     chats = db.query(Chat).filter(
         Chat.assigned_agent_id == current_user.id,
         Chat.mode == ChatMode.agent
@@ -87,9 +76,7 @@ def get_my_chats(
 
     results = []
     for chat in chats:
-        # Get ticket info
         ticket = db.query(Ticket).filter(Ticket.chat_id == chat.id).first()
-
         results.append({
             "id": chat.id,
             "customer_name": chat.customer_name,
@@ -114,13 +101,9 @@ def get_chat_messages(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Get messages from a chat
-    """
     if current_user.role != UserRole.agent:
         raise HTTPException(status_code=403, detail="Only agents can access this endpoint")
 
-    # Verify chat is assigned to this agent
     chat = db.query(Chat).filter(Chat.id == chat_id).first()
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
@@ -128,12 +111,10 @@ def get_chat_messages(
     if chat.assigned_agent_id != current_user.id:
         raise HTTPException(status_code=403, detail="This chat is not assigned to you")
 
-    # Get messages
     messages = db.query(Message).filter(
         Message.chat_id == chat_id
     ).order_by(Message.created_at.desc()).offset(offset).limit(limit).all()
 
-    # Mark messages as read
     if messages:
         chat.unread_count = 0
         db.commit()
@@ -148,35 +129,27 @@ def send_message_to_customer(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Agent send message to customer via WhatsApp
-    """
     if current_user.role != UserRole.agent:
         raise HTTPException(status_code=403, detail="Only agents can send messages")
 
-    # Get chat
     chat = db.query(Chat).filter(Chat.id == request.chat_id).first()
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
 
-    # Verify chat is assigned to this agent
     if chat.assigned_agent_id != current_user.id:
         raise HTTPException(status_code=403, detail="This chat is not assigned to you")
 
-    # Get agent profile for signature
     agent_profile = db.query(AgentProfile).filter(
         AgentProfile.user_id == current_user.id
     ).first()
 
-    # Prepare message text with agent signature
     message_text = request.text
     if agent_profile and agent_profile.signature:
         message_text = f"{request.text}\n\n{agent_profile.signature}"
 
-    # Save message to database
     message = Message(
         chat_id=chat.id,
-        text=request.text,  # Save original text without signature
+        text=request.text,  # simpan teks asli tanpa signature
         sender=MessageSender.agent,
         agent_id=current_user.id,
         status=MessageStatus.sent,
@@ -187,23 +160,18 @@ def send_message_to_customer(
     )
     db.add(message)
 
-    # Update chat
     chat.last_message_at = datetime.now()
 
-    # Update ticket first_response_at if this is first agent response
     ticket = db.query(Ticket).filter(Ticket.chat_id == chat.id).first()
     if ticket:
         if not ticket.first_response_at:
             ticket.first_response_at = datetime.now()
-
-        # Update ticket status to in_progress if it's still assigned
         if ticket.status == TicketStatus.assigned:
             ticket.status = TicketStatus.in_progress
 
     db.commit()
     db.refresh(message)
 
-    # Send to WhatsApp in background
     if request.media_url and request.media_type:
         target = f"{chat.customer_phone}@c.us"
         background_tasks.add_task(
@@ -228,15 +196,11 @@ async def update_agent_status(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Update agent availability status
-    """
     if current_user.role != UserRole.agent:
         raise HTTPException(status_code=403, detail="Only agents can update status")
 
     from app.models.agent_profile import AgentStatus
 
-    # Get atau auto-create agent profile jika belum ada
     agent_profile = db.query(AgentProfile).filter(
         AgentProfile.user_id == current_user.id
     ).first()
@@ -257,7 +221,6 @@ async def update_agent_status(
         db.commit()
         db.refresh(agent_profile)
 
-        # Broadcast perubahan status ke semua dashboard client secara real-time
         await ws_manager.broadcast_global({
             "type": "agent_status",
             "agent_id": current_user.id,
@@ -277,7 +240,7 @@ async def update_agent_status(
     except KeyError:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid status. Must be one of: online, offline, busy, break_time"
+            detail="Invalid status. Must be one of: online, offline, busy, break_time"
         )
 
 
@@ -287,8 +250,7 @@ def agent_heartbeat(
     db: Session = Depends(get_db)
 ):
     """
-    Heartbeat dari agent dashboard — memperbarui last_activity_at.
-    Dikirim setiap ~90 detik oleh frontend untuk menandakan agent masih aktif.
+    Dipaggil frontend setiap ~90 detik untuk menandakan agent masih aktif.
     Background task akan set offline agent yang tidak kirim heartbeat > 3 menit.
     """
     if current_user.role != UserRole.agent:
@@ -299,7 +261,6 @@ def agent_heartbeat(
     ).first()
 
     if not agent_profile:
-        # Auto-create profile jika belum ada
         agent_profile = AgentProfile(
             user_id=current_user.id,
             display_name=current_user.name,
@@ -317,13 +278,9 @@ def get_agent_status(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Get current agent status and statistics
-    """
     if current_user.role != UserRole.agent:
         raise HTTPException(status_code=403, detail="Only agents can access this endpoint")
 
-    # Get agent profile
     agent_profile = db.query(AgentProfile).filter(
         AgentProfile.user_id == current_user.id
     ).first()
@@ -331,7 +288,6 @@ def get_agent_status(
     if not agent_profile:
         raise HTTPException(status_code=404, detail="Agent profile not found")
 
-    # Get active ticket count
     from app.services.queue_service import QueueService
     queue_service = QueueService(db)
     active_tickets = queue_service.get_agent_active_ticket_count(current_user.id)
@@ -351,15 +307,48 @@ def get_agent_status(
     }
 
 
+@router.get("/daily-stats")
+def get_agent_daily_stats(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Statistik harian: berapa ticket yang ditangani dan diselesaikan agent hari ini.
+    resolved_today dihitung dari Ticket langsung (bukan QueueAssignment) supaya tidak
+    ikut bertambah saat agent lain claim ulang ticket yang sama.
+    """
+    if current_user.role != UserRole.agent:
+        raise HTTPException(status_code=403, detail="Only agents can access this endpoint")
+
+    from datetime import date
+    from app.models.queue_assignment import QueueAssignment
+
+    today_start = datetime.combine(date.today(), datetime.min.time())
+
+    handled_today = db.query(QueueAssignment).filter(
+        QueueAssignment.agent_id == current_user.id,
+        QueueAssignment.assigned_at >= today_start,
+    ).count()
+
+    resolved_today = db.query(Ticket).filter(
+        Ticket.assigned_agent_id == current_user.id,
+        Ticket.status == TicketStatus.resolved,
+        Ticket.resolved_at >= today_start,
+    ).count()
+
+    return {
+        "resolved_today": resolved_today,
+        "handled_today": handled_today,
+        "date": date.today().isoformat(),
+    }
+
+
 @router.post("/chat/{chat_id}/mark-waiting")
 def mark_chat_waiting_customer(
     chat_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Mark ticket as waiting for customer response
-    """
     if current_user.role != UserRole.agent:
         raise HTTPException(status_code=403, detail="Only agents can update ticket status")
 
@@ -390,9 +379,6 @@ def resolve_chat(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Resolve ticket and close chat
-    """
     if current_user.role != UserRole.agent:
         raise HTTPException(status_code=403, detail="Only agents can resolve tickets")
 
@@ -407,7 +393,6 @@ def resolve_chat(
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
 
-    # Use queue service to resolve
     from app.services.queue_service import QueueService
     queue_service = QueueService(db)
     success = queue_service.resolve_ticket(ticket.id)

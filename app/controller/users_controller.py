@@ -6,9 +6,7 @@ from app.utils.security import hash_password
 
 
 def get_all_admins(db: Session):
-    """Get all admin users"""
     admins = db.query(User).filter(User.role == UserRole.admin).all()
-
     return [
         {
             "id": admin.id,
@@ -17,14 +15,13 @@ def get_all_admins(db: Session):
             "phone": admin.phone,
             "username": admin.username,
             "role": admin.role.value,
-            "online": False  # TODO: Implement online status tracking
+            "online": False,
         }
         for admin in admins
     ]
 
 
 def get_all_agents(db: Session):
-    """Get all agent users with profile info"""
     agents = db.query(User).filter(User.role == UserRole.agent).all()
     result = []
     for agent in agents:
@@ -44,7 +41,7 @@ def get_all_agents(db: Session):
 
 
 def create_agent(data: dict, db: Session):
-    """Admin membuat agent baru + auto-create AgentProfile"""
+    """Buat agent baru + auto-create AgentProfile"""
     if db.query(User).filter(User.email == data["email"]).first():
         raise HTTPException(status_code=400, detail="Email sudah digunakan")
     if db.query(User).filter(User.username == data["username"]).first():
@@ -90,7 +87,7 @@ def create_agent(data: dict, db: Session):
 
 
 def update_agent_full(user_id: int, data: dict, db: Session):
-    """Admin edit semua field agent"""
+    """Edit semua field agent"""
     user = db.query(User).filter(User.id == user_id, User.role == UserRole.agent).first()
     if not user:
         raise HTTPException(status_code=404, detail="Agent tidak ditemukan")
@@ -141,7 +138,6 @@ def update_agent_full(user_id: int, data: dict, db: Session):
 
 
 def delete_agent(user_id: int, db: Session):
-    """Admin hapus agent"""
     user = db.query(User).filter(User.id == user_id, User.role == UserRole.agent).first()
     if not user:
         raise HTTPException(status_code=404, detail="Agent tidak ditemukan")
@@ -151,7 +147,7 @@ def delete_agent(user_id: int, db: Session):
 
 
 def update_agent_tag(user_id: int, display_name: str, db: Session):
-    """Agent edit hanya tag / display_name miliknya sendiri"""
+    """Agent ganti display name / tag miliknya sendiri"""
     display_name = display_name.strip()
     if not display_name:
         raise HTTPException(status_code=400, detail="Display name tidak boleh kosong")
@@ -168,9 +164,7 @@ def update_agent_tag(user_id: int, display_name: str, db: Session):
 
 
 def get_all_users(db: Session):
-    """Get all users"""
     users = db.query(User).all()
-
     return [
         {
             "id": user.id,
@@ -179,24 +173,20 @@ def get_all_users(db: Session):
             "phone": user.phone,
             "username": user.username,
             "role": user.role.value,
-            "online": False  # TODO: Implement online status tracking
+            "online": False,
         }
         for user in users
     ]
 
 
 def update_user_profile(user_id: int, data: dict, db: Session):
-    """Update user profile (name, email, phone)"""
     user = db.query(User).filter(User.id == user_id).first()
-
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Update fields if provided
     if "name" in data and data["name"]:
         user.name = data["name"]
     if "email" in data and data["email"]:
-        # Check if email is already taken by another user
         existing = db.query(User).filter(
             User.email == data["email"],
             User.id != user_id
@@ -204,7 +194,6 @@ def update_user_profile(user_id: int, data: dict, db: Session):
         if existing:
             raise HTTPException(status_code=400, detail="Email already taken")
         user.email = data["email"]
-
     if "phone" in data:
         user.phone = data["phone"]
 

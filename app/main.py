@@ -12,7 +12,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(levelname)s: %(name)s: %(message)s",
 )
-# Force webhook logger to show INFO regardless of uvicorn override
+# Pastikan webhook logger tetap tampil meski uvicorn override level logging
 logging.getLogger("app.whapi.webhook").setLevel(logging.INFO)
 logging.getLogger("app.services.bot_service").setLevel(logging.INFO)
 
@@ -26,7 +26,7 @@ from app.whapi.webhook import router as whapi_router
 from app.config.database import SessionLocal
 from app.services.ws_manager import manager as ws_manager
 
-# Import models to register with SQLAlchemy
+# Import model supaya SQLAlchemy mendaftarkan semua tabel sebelum create_all
 from app.models.user import User
 from app.models.chat import Chat
 from app.models.message import Message
@@ -37,27 +37,16 @@ from app.models.queue_assignment import QueueAssignment
 from app.models.agent_metrics import AgentMetrics
 from app.models.shortcut_message import ShortcutMessage
 
-# Create tables
 Base.metadata.create_all(bind=engine)
 
-# =========================================================
-# APP CONFIGURATION
-# =========================================================
 APP_NAME = "Dashboard API"
 APP_VERSION = "0.1.0"
 ENV = os.getenv("NODE_ENV", "development")
 PORT = os.getenv("PORT", "8000")
 
-app = FastAPI(
-    title=APP_NAME,
-    version=APP_VERSION,
-)
+app = FastAPI(title=APP_NAME, version=APP_VERSION)
 
-# =========================================================
-# CORS
-# =========================================================
-# Development: Allow all origins
-# Production: Restrict to specific origins
+# Production: batasi origin. Development: izinkan semua.
 if ENV == "production":
     allowed_origins = [
         "http://localhost:3000",
@@ -66,33 +55,29 @@ if ENV == "production":
         "http://127.0.0.1:8888",
     ]
 else:
-    # Development: Allow all origins
     allowed_origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_credentials=True if ENV == "production" else False,  # Can't use credentials with allow_origins=["*"]
+    allow_credentials=ENV == "production",  # tidak bisa pakai credentials dengan allow_origins=["*"]
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# =========================================================
-# HELPER FUNCTIONS
-# =========================================================
+
 def section(title: str):
     print("\n" + "─" * 80)
     print(title)
     print("─" * 80)
+
 
 def mask(value: str):
     if not value:
         return "Not Set"
     return "****" + value[-4:] if len(value) > 4 else "****"
 
-# =========================================================
-# STARTUP DASHBOARD (PROFESSIONAL)
-# =========================================================
+
 @app.on_event("startup")
 def startup_dashboard():
     base_url = f"http://localhost:{PORT}"
@@ -107,20 +92,19 @@ def startup_dashboard():
 ║   ██████╔╝██║  ██║███████║██║  ██║██████╔╝██║  ██║██║  ██║██████╔╝           ║
 ║   ╚═════╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝            ║
 ║                                                                              ║
-║              🚀  D A S H B O A R D   A P I   S T A R T U P                   ║
+║              D A S H B O A R D   A P I   S T A R T U P                      ║
 ║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """ + "\033[0m")
-    # APP INFO
-    section("🚀 APPLICATION INFO")
-    print(f"📦 App        : {APP_NAME}")
-    print(f"📌 Version    : {APP_VERSION}")
-    print(f"🌎 Environment: {ENV}")
-    print(f"⏰ Started at : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"📂 Workdir    : {os.getcwd()}")
 
-    # DATABASE
-    section("🗄️ DATABASE")
+    section("APPLICATION INFO")
+    print(f"   App        : {APP_NAME}")
+    print(f"   Version    : {APP_VERSION}")
+    print(f"   Environment: {ENV}")
+    print(f"   Started at : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"   Workdir    : {os.getcwd()}")
+
+    section("DATABASE")
     print(f"   Type       : PostgreSQL")
     print(f"   Host       : {DB_HOST}")
     print(f"   Port       : {DB_PORT}")
@@ -132,55 +116,39 @@ def startup_dashboard():
             conn.execute(text("SELECT 1"))
             inspector = inspect(engine)
             tables = inspector.get_table_names()
-
         print(f"   Status     : CONNECTED")
         print(f"   Tables     : {len(tables)}")
         for table in tables:
             print(f"   ├─ {table}")
-
     except Exception as e:
         print(f"   Status     : FAILED")
         print(f"   Error      : {e}")
 
-    # MODELS
-    section(f"📚 MODELS LOADED ({len(Base.metadata.tables)})")
+    section(f"MODELS LOADED ({len(Base.metadata.tables)})")
     for model in Base.metadata.tables.keys():
         print(f"   ├─ {model}")
 
-    # ROUTES
-    section("🛣️ API ROUTES")
+    section("API ROUTES")
     routes = [
-        ("Auth", "/api/auth"),
-        ("Chat", "/api/chats"),
-        ("Users", "/api/users"),
+        ("Auth",       "/api/auth"),
+        ("Chat",       "/api/chats"),
+        ("Users",      "/api/users"),
         ("Admin Chat", "/api/admin/chats"),
-        ("Tickets", "/api/tickets"),
+        ("Tickets",    "/api/tickets"),
         ("Agent Chat", "/api/agent/chats"),
-        ("Shortcuts", "/api/shortcuts"),
-        ("WhatsApp", "/api/webhook"),
+        ("Shortcuts",  "/api/shortcuts"),
+        ("WhatsApp",   "/api/webhook"),
     ]
     for name, path in routes:
         print(f"   ├─ {name.ljust(12)} → {path}")
 
-    # CORS
-    section("🌐 CORS")
-    print("   Origins    : http://localhost:3000, http://127.0.0.1:3000")
-    print("   Credentials: Enabled")
-    print("   Methods    : All")
-    print("   Headers    : All")
-
-    # DOCUMENTATION
-    section("📘 API DOCUMENTATION")
+    section("API DOCUMENTATION")
     print(f"   Swagger UI : {base_url}/docs")
-    print(f"   ReDoc     : {base_url}/redoc")
-    print(f"   OpenAPI   : {base_url}/openapi.json")
+    print(f"   ReDoc      : {base_url}/redoc")
+    print(f"   OpenAPI    : {base_url}/openapi.json")
 
-    # ENVIRONMENT
-    section("🔧 ENVIRONMENT")
-    env_vars = [
-        "DB_HOST", "DB_PORT", "DB_NAME", "DB_USER",
-        "SECRET_KEY", "WHAPI_TOKEN", "WHAPI_URL"
-    ]
+    section("ENVIRONMENT")
+    env_vars = ["DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "SECRET_KEY", "WHAPI_TOKEN", "WHAPI_URL"]
     for var in env_vars:
         value = os.getenv(var)
         if var in ["SECRET_KEY", "WHAPI_TOKEN"]:
@@ -189,19 +157,41 @@ def startup_dashboard():
             print(f"   ├─ {var.ljust(12)} : {value or 'Not Set'}")
 
     print("\n" + "=" * 80)
-    print("✅ APPLICATION READY")
+    print("APPLICATION READY")
     print("=" * 80 + "\n")
 
 
-# =========================================================
-# AGENT ONLINE STATUS — STARTUP RESET
-# =========================================================
+@app.on_event("startup")
+def sync_ticket_priority_from_chats():
+    """Sinkronisasi Ticket.priority dari Chat.priority untuk semua record yang ada."""
+    from app.models.chat import Chat
+    from app.models.ticket import Ticket as TicketModel, TicketPriority
+    db = SessionLocal()
+    try:
+        tickets = db.query(TicketModel).all()
+        updated = 0
+        for ticket in tickets:
+            chat = db.query(Chat).filter(Chat.id == ticket.chat_id).first()
+            if chat and chat.priority:
+                try:
+                    new_priority = TicketPriority[chat.priority]
+                    if ticket.priority != new_priority:
+                        ticket.priority = new_priority
+                        updated += 1
+                except KeyError:
+                    pass
+        if updated:
+            db.commit()
+            logging.getLogger(__name__).info(f"[MIGRATION] Synced priority for {updated} ticket(s)")
+    except Exception as e:
+        logging.getLogger(__name__).error(f"[MIGRATION] sync_ticket_priority failed: {e}")
+    finally:
+        db.close()
+
+
 @app.on_event("startup")
 def reset_all_agents_to_offline():
-    """
-    Saat server baru start, semua agent di-reset ke offline.
-    Agent harus buka dashboard lagi agar statusnya kembali online.
-    """
+    """Reset semua agent ke offline saat server start. Agent harus buka dashboard lagi."""
     from app.models.agent_profile import AgentProfile, AgentStatus
     db = SessionLocal()
     try:
@@ -220,17 +210,14 @@ def reset_all_agents_to_offline():
         db.close()
 
 
-# =========================================================
-# AGENT ONLINE STATUS — STALE AGENT BACKGROUND TASK
-# =========================================================
 async def _stale_agent_checker():
     """
     Background task: cek setiap 2 menit.
-    Agent yang tidak kirim heartbeat > 3 menit → set offline + broadcast WS.
+    Agent yang tidak kirim heartbeat lebih dari 3 menit → set offline dan broadcast WS.
     """
     logger = logging.getLogger(__name__)
     while True:
-        await asyncio.sleep(120)  # cek setiap 2 menit
+        await asyncio.sleep(120)
         try:
             from app.models.agent_profile import AgentProfile, AgentStatus
             from sqlalchemy import or_
@@ -271,16 +258,10 @@ async def start_stale_agent_checker():
     asyncio.create_task(_stale_agent_checker())
 
 
-# =========================================================
-# STATIC FILES (uploads)
-# =========================================================
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
-# =========================================================
-# ROUTES
-# =========================================================
 app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(users.router)
@@ -291,17 +272,13 @@ app.include_router(shortcuts.router)
 app.include_router(ws_router)
 app.include_router(whapi_router)
 
-# =========================================================
-# HEALTH ENDPOINTS
-# =========================================================
+
 @app.get("/", tags=["Health"])
 def health_check():
     return {"status": "ok"}
 
+
 @app.get("/db-connect", tags=["Health"])
 def db_connect(db: Session = Depends(get_db)):
     db.execute(text("SELECT 1"))
-    return {
-        "database": "postgresql",
-        "status": "connected"
-    }
+    return {"database": "postgresql", "status": "connected"}

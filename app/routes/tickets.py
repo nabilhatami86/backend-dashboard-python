@@ -15,6 +15,7 @@ from app.models.ticket import Ticket, TicketStatus, TicketPriority
 from app.models.queue_assignment import QueueAssignment
 from app.models.agent_profile import AgentProfile, AgentStatus
 from app.services.queue_service import QueueService
+from app.services.ws_manager import manager
 
 router = APIRouter(prefix="/tickets", tags=["tickets"])
 
@@ -296,7 +297,7 @@ def assign_ticket(
 
 
 @router.post("/{ticket_id}/transfer")
-def transfer_ticket(
+async def transfer_ticket(
     ticket_id: int,
     request: TransferTicketRequest,
     current_user: User = Depends(get_current_user),
@@ -326,6 +327,7 @@ def transfer_ticket(
 
     queue_service = QueueService(db)
     from_agent_id = ticket.assigned_agent_id
+    chat_id = ticket.chat_id
     success = queue_service.transfer_ticket(
         ticket_id=ticket_id,
         from_agent_id=from_agent_id,
@@ -340,6 +342,15 @@ def transfer_ticket(
         )
 
     ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+
+    await manager.broadcast_global({
+        "type": "ticket_transferred",
+        "to_agent_id": request.to_agent_id,
+        "from_agent_id": from_agent_id,
+        "ticket_id": ticket_id,
+        "chat_id": chat_id,
+    })
+
     return {
         "status": "success",
         "message": f"Ticket {ticket_id} transferred to agent {request.to_agent_id}",
@@ -348,7 +359,7 @@ def transfer_ticket(
 
 
 @router.post("/transfer-by-chat/{chat_id}")
-def transfer_ticket_by_chat(
+async def transfer_ticket_by_chat(
     chat_id: int,
     request: TransferTicketRequest,
     current_user: User = Depends(get_current_user),
@@ -384,8 +395,9 @@ def transfer_ticket_by_chat(
         raise HTTPException(status_code=404, detail="Ticket not found for this chat")
 
     from_agent_id = ticket.assigned_agent_id
+    ticket_id = ticket.id
     success = queue_service.transfer_ticket(
-        ticket_id=ticket.id,
+        ticket_id=ticket_id,
         from_agent_id=from_agent_id,
         to_agent_id=request.to_agent_id,
         reason=request.reason
@@ -398,6 +410,15 @@ def transfer_ticket_by_chat(
         )
 
     db.refresh(ticket)
+
+    await manager.broadcast_global({
+        "type": "ticket_transferred",
+        "to_agent_id": request.to_agent_id,
+        "from_agent_id": from_agent_id,
+        "ticket_id": ticket_id,
+        "chat_id": chat_id,
+    })
+
     return {
         "status": "success",
         "message": f"Chat {chat_id} transferred to agent {request.to_agent_id}",

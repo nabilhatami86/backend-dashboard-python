@@ -3,6 +3,9 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import desc
 from app.models.chat import Chat, ChatMode
 from app.models.message import Message, MessageSender, MessageStatus
+from app.models.ticket import Ticket
+from app.models.queue_assignment import QueueAssignment, AssignmentType
+from app.models.user import User
 from app.schemas.chat_schema import (
     ChatCreate,
     ChatUpdate,
@@ -62,19 +65,26 @@ def get_all_chats(db: Session, user_id: int = None, user_role: str = None) -> Li
             assigned_agent=assigned_agent,
             group_id=chat.group_id,
             group_name=chat.group_name,
-            last_participant_name=last_participant_name
+            last_participant_name=last_participant_name,
+            priority=chat.priority
         ))
 
     return result
 
 
 def get_available_tickets(db: Session) -> List[ChatResponse]:
+    PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
+
     query = db.query(Chat).filter(
         Chat.mode == ChatMode.paused,
         Chat.assigned_agent_id == None,
-    ).order_by(Chat.last_message_at.asc())
+    )
 
     chats = query.all()
+    chats.sort(key=lambda c: (
+        PRIORITY_ORDER.get(c.priority, 1),
+        c.last_message_at or datetime.min,
+    ))
 
     result = []
     for chat in chats:
@@ -97,7 +107,8 @@ def get_available_tickets(db: Session) -> List[ChatResponse]:
                 media_type=msg.media_type,
                 media_filename=msg.media_filename,
                 participant_phone=msg.participant_phone,
-                participant_name=msg.participant_name
+                participant_name=msg.participant_name,
+                priority=chat.priority
             ))
 
         # For group chats: customer_name is already participant name (set in webhook)
@@ -118,7 +129,8 @@ def get_available_tickets(db: Session) -> List[ChatResponse]:
             ),
             messages=message_responses,
             group_id=chat.group_id,
-            group_name=chat.group_name
+            group_name=chat.group_name,
+            priority=chat.priority
         ))
 
     return result
@@ -131,7 +143,8 @@ def claim_ticket(chat_id: int, agent_id: int, db: Session) -> ChatResponse:
     logger = logging.getLogger(__name__)
     now = datetime.now()
 
-    chat = db.query(Chat).filter(Chat.id == chat_id).first()
+    # WITH_FOR_UPDATE: kunci row ini agar tidak bisa di-claim dua agent sekaligus
+    chat = db.query(Chat).filter(Chat.id == chat_id).with_for_update().first()
 
     if not chat:
         raise HTTPException(
@@ -139,11 +152,11 @@ def claim_ticket(chat_id: int, agent_id: int, db: Session) -> ChatResponse:
             detail="Chat not found"
         )
 
-    # Check if chat is already assigned
+    # Check if chat is already assigned (atomic check karena pakai lock)
     if chat.assigned_agent_id is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Chat already assigned to agent {chat.assigned_agent_id}"
+            detail="Chat sudah diambil oleh agent lain"
         )
 
     # Assign to agent and change mode
@@ -152,19 +165,39 @@ def claim_ticket(chat_id: int, agent_id: int, db: Session) -> ChatResponse:
 
     # Update existing ticket or create new one
     existing_ticket = db.query(Ticket).filter(Ticket.chat_id == chat_id).first()
+    ticket = existing_ticket
     if existing_ticket:
         existing_ticket.status = TicketStatus.in_progress
         existing_ticket.assigned_agent_id = agent_id
         existing_ticket.assigned_at = now
     else:
-        new_ticket = Ticket(
+        ticket = Ticket(
             chat_id=chat_id,
             status=TicketStatus.in_progress,
             priority=TicketPriority.medium,
             assigned_agent_id=agent_id,
             assigned_at=now
         )
-        db.add(new_ticket)
+        db.add(ticket)
+
+    db.flush()  # get ticket.id before commit
+
+    # Tutup SEMUA QueueAssignment lama untuk ticket ini (transfer sebelumnya dll)
+    # Ini mencegah notif "Chat ditransfer" muncul lagi saat claim baru
+    db.query(QueueAssignment).filter(
+        QueueAssignment.ticket_id == ticket.id,
+        QueueAssignment.is_active == True,
+    ).update({"is_active": False, "unassigned_at": now})
+
+    # Buat QueueAssignment baru untuk claim ini (dipakai daily stats)
+    qa = QueueAssignment(
+        ticket_id=ticket.id,
+        agent_id=agent_id,
+        assignment_type=AssignmentType.claimed,
+        assigned_at=now,
+        is_active=True,
+    )
+    db.add(qa)
 
     db.commit()
     db.refresh(chat)
@@ -201,7 +234,8 @@ def get_chat_detail(chat_id: int, db: Session) -> ChatResponse:
             media_type=msg.media_type,
             media_filename=msg.media_filename,
             participant_phone=msg.participant_phone,
-            participant_name=msg.participant_name
+            participant_name=msg.participant_name,
+            priority=chat.priority
         ))
 
     # Build customer profile
@@ -211,6 +245,27 @@ def get_chat_detail(chat_id: int, db: Session) -> ChatResponse:
         address=chat.customer_address,
         lastActive="Online" if chat.online else datetime.now().strftime("%Y-%m-%d %H:%M")
     )
+
+    # Cek apakah ada transfer assignment terbaru untuk chat ini
+    transfer_note = None
+    transfer_from_agent = None
+    ticket = db.query(Ticket).filter(Ticket.chat_id == chat_id).first()
+    if ticket:
+        latest_transfer = (
+            db.query(QueueAssignment)
+            .filter(
+                QueueAssignment.ticket_id == ticket.id,
+                QueueAssignment.assignment_type == AssignmentType.transferred,
+                QueueAssignment.is_active == True,
+            )
+            .order_by(QueueAssignment.assigned_at.desc())
+            .first()
+        )
+        if latest_transfer and latest_transfer.reason and latest_transfer.assigned_by_id:
+            from_agent = db.query(User).filter(User.id == latest_transfer.assigned_by_id).first()
+            if from_agent:
+                transfer_note = latest_transfer.reason
+                transfer_from_agent = from_agent.name
 
     # For group chats: customer_name is already participant name (set in webhook)
     return ChatResponse(
@@ -223,7 +278,10 @@ def get_chat_detail(chat_id: int, db: Session) -> ChatResponse:
         profile=profile,
         messages=formatted_messages,
         group_id=chat.group_id,
-        group_name=chat.group_name
+        group_name=chat.group_name,
+        transfer_note=transfer_note,
+        transfer_from_agent=transfer_from_agent,
+        priority=chat.priority
     )
 
 
@@ -282,6 +340,15 @@ def update_chat(chat_id: int, data: ChatUpdate, db: Session) -> ChatResponse:
                 if not ticket.assigned_agent_id and chat.assigned_agent_id:
                     ticket.assigned_agent_id = chat.assigned_agent_id
 
+                # Tutup QueueAssignment aktif — ini yang jadi acuan daily stats
+                active_qa = db.query(QueueAssignment).filter(
+                    QueueAssignment.ticket_id == ticket.id,
+                    QueueAssignment.is_active == True,
+                ).first()
+                if active_qa:
+                    active_qa.is_active = False
+                    active_qa.unassigned_at = datetime.now()
+
             # Unassign agent so chat doesn't show in agent's list
             chat.assigned_agent_id = None
             chat.mode = ChatMode.closed
@@ -321,6 +388,17 @@ def update_chat(chat_id: int, data: ChatUpdate, db: Session) -> ChatResponse:
 
     if data.unread_count is not None:
         chat.unread_count = data.unread_count
+
+    if data.priority is not None:
+        chat.priority = data.priority
+        # Sinkron ke Ticket.priority agar admin dashboard ikut terupdate
+        from app.models.ticket import Ticket as TicketModel, TicketPriority
+        ticket = db.query(TicketModel).filter(TicketModel.chat_id == chat_id).first()
+        if ticket:
+            try:
+                ticket.priority = TicketPriority[data.priority]
+            except KeyError:
+                pass  # nilai priority tidak valid, abaikan
 
     db.commit()
     db.refresh(chat)
@@ -443,7 +521,8 @@ def send_message(data: MessageCreate, db: Session) -> MessageResponse:
         media_type=message.media_type,
         media_filename=message.media_filename,
         participant_phone=message.participant_phone,
-        participant_name=message.participant_name
+        participant_name=message.participant_name,
+        priority=chat.priority
     )
 
 
@@ -531,7 +610,8 @@ def update_tag_chat_agent(message_id: int, new_agent_name: str, db: Session):
         media_type=message.media_type,
         media_filename=message.media_filename,
         participant_phone=message.participant_phone,
-        participant_name=message.participant_name
+        participant_name=message.participant_name,
+        priority=chat.priority
     )
 
 
@@ -567,7 +647,8 @@ def update_message(message_id: int, new_text: str, db: Session):
         media_type=message.media_type,
         media_filename=message.media_filename,
         participant_phone=message.participant_phone,
-        participant_name=message.participant_name
+        participant_name=message.participant_name,
+        priority=chat.priority
     )
 
 

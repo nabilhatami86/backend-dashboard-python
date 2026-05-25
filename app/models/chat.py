@@ -51,3 +51,5 @@ class Chat(Base):
 
     # Relationship to ticket (one-to-one)
     ticket = relationship("Ticket", back_populates="chat", uselist=False, cascade="all, delete-orphan")
+
+    priority = Column(Enum("low", "medium", "high", name="chat_priority"), default="medium")

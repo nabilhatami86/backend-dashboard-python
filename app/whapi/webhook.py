@@ -10,7 +10,7 @@ from datetime import datetime
 import time
 from threading import Lock
 
-from app.whapi.client import send_text
+from app.whapi.client import send_text, send_presence
 from app.services.bot_service import handle_bot
 from app.services.queue_service import QueueService
 from app.services.ws_manager import manager as ws_manager
@@ -25,7 +25,6 @@ router = APIRouter()
 # Pesan yang dikirim ke customer saat eskalasi ke CS
 ESCALATION_REPLY = "Baik kak, akan kami hubungi ke Customer Service kita, Sebentar ya"
 
-
 _ESCALATION_TRIGGERS = [
     "silahkan hubungi kami melalui whatsapp",
     "hubungi kami melalui whatsapp",
@@ -33,7 +32,6 @@ _ESCALATION_TRIGGERS = [
     "silakan hubungi kami",
     "bantu saya untuk menjawab pertanyaan ini",
     "baik kak, akan kami hubungi ke customer service kita, sebentar ya"
-   
 ]
 
 
@@ -44,77 +42,65 @@ def _is_escalation_reply(reply: str) -> bool:
 
 class MessageDedupCache:
     def __init__(self, max_size=1000, ttl_seconds=10):
-        self.cache = {}  # {message_key: insert_time}
+        self.cache = {}
         self.lock = Lock()
         self.max_size = max_size
         self.ttl_seconds = ttl_seconds
 
-    def is_duplicate(self, phone: str, text: str, msg_timestamp: int = None) -> bool:
-        # Round timestamp ke nearest second untuk group messages yang datang bersamaan
-        rounded_ts = msg_timestamp // 1 if msg_timestamp else int(time.time())
+    def is_duplicate(self, phone: str, text: str, msg_timestamp=None) -> bool:
+        # timestamp dari Baileys bisa berupa dict protobuf: {"low": ..., "high": ..., "unsigned": true}
+        if isinstance(msg_timestamp, dict):
+            msg_timestamp = msg_timestamp.get('low') or int(time.time())
+        rounded_ts = int(msg_timestamp) if msg_timestamp else int(time.time())
         message_key = f"{phone}:{text}:{rounded_ts}"
 
         with self.lock:
             now = time.time()
-
-            # Cleanup old entries (older than TTL)
             expired_keys = [k for k, v in self.cache.items() if now - v > self.ttl_seconds]
             for k in expired_keys:
                 del self.cache[k]
 
-            # Check if this message was recently processed
             if message_key in self.cache:
-                logger.warning(f"[DEDUP] Duplicate message detected: {message_key}")
-                return True  # Duplicate!
+                logger.warning(f"[DEDUP] Duplicate message: {message_key}")
+                return True
 
-            # Add to cache
             self.cache[message_key] = now
-
-            # Limit cache size (remove oldest if too big)
             if len(self.cache) > self.max_size:
                 oldest_key = min(self.cache.items(), key=lambda x: x[1])[0]
                 del self.cache[oldest_key]
 
-            return False  # Not duplicate
+            return False
 
-# Global dedup cache instance
+
 message_dedup_cache = MessageDedupCache()
+
+
 class ChatProcessingLock:
     def __init__(self):
-        self.locks = {}  # {chat_id: Lock}
+        self.locks = {}
         self.master_lock = Lock()
 
     def get_lock(self, chat_id: int):
-        """Get or create lock for specific chat"""
         with self.master_lock:
             if chat_id not in self.locks:
                 self.locks[chat_id] = Lock()
             return self.locks[chat_id]
 
     def cleanup_old_locks(self):
-        """Cleanup locks yang tidak digunakan (optional, untuk prevent memory leak)"""
         with self.master_lock:
-            # Keep only 100 most recent locks
             if len(self.locks) > 100:
-                # Remove oldest 50 locks
                 keys_to_remove = list(self.locks.keys())[:50]
                 for key in keys_to_remove:
                     del self.locks[key]
 
-# Global chat processing lock instance
+
 chat_processing_lock = ChatProcessingLock()
 
 
-# =========================
-# helper
-# =========================
 def normalize_phone(sender: str) -> str:
     return sender.split("@")[0]
 
 
-# =========================
-# CHAT
-# =========================
 def get_or_create_chat(db: Session, phone: str, name: str = None, group_id: str = None, group_name: str = None, participant_jid: str = None, participant_phone: str = None, participant_name: str = None) -> Chat:
     if group_id:
         chat = db.query(Chat).filter(
@@ -125,23 +111,19 @@ def get_or_create_chat(db: Session, phone: str, name: str = None, group_id: str 
         if chat:
             chat.online = True
             chat.last_message_at = datetime.now()
-            # Update group name if provided
             if group_name:
                 chat.group_name = group_name
-            # Update participant name if provided (might change display name)
             if participant_name and chat.customer_name != participant_name:
                 chat.customer_name = participant_name
-            # Update last participant JID for auto-mention
             if participant_jid:
                 chat.last_participant_jid = participant_jid
             db.commit()
             db.refresh(chat)
             return chat
 
-        # Buat chat grup baru untuk participant ini
         new_chat = Chat(
-            customer_name=participant_name or participant_phone or f"Anggota Grup",  # Nama participant
-            customer_phone=participant_phone, 
+            customer_name=participant_name or participant_phone or "Anggota Grup",
+            customer_phone=participant_phone,
             channel=ChatChannel.whatsapp,
             mode=ChatMode.bot,
             online=True,
@@ -152,7 +134,6 @@ def get_or_create_chat(db: Session, phone: str, name: str = None, group_id: str 
             last_participant_jid=participant_jid,
         )
     else:
-        # PRIBADI: Cari berdasarkan phone dengan group_id NULL
         chat = db.query(Chat).filter(
             Chat.customer_phone == phone,
             Chat.group_id.is_(None)
@@ -167,7 +148,6 @@ def get_or_create_chat(db: Session, phone: str, name: str = None, group_id: str 
             db.refresh(chat)
             return chat
 
-        # Buat chat pribadi baru
         new_chat = Chat(
             customer_name=name or phone,
             customer_phone=phone,
@@ -199,9 +179,6 @@ def get_or_create_chat(db: Session, phone: str, name: str = None, group_id: str 
     return new_chat
 
 
-# =========================
-# MESSAGE
-# =========================
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -220,7 +197,7 @@ MIMETYPE_TO_EXT = {
 
 
 def save_incoming_media(media_base64: str, media_type: str, mimetype: str, filename: str = None) -> str | None:
-    """Decode base64 media and save to uploads/ directory. Returns relative URL."""
+    """Decode base64 media dari WhatsApp dan simpan ke folder uploads/. Return relative URL."""
     try:
         data = base64.b64decode(media_base64)
         ext = MIMETYPE_TO_EXT.get(mimetype, "")
@@ -249,7 +226,6 @@ def save_customer_message(
     media_type: str = None,
     media_filename: str = None,
 ) -> Message:
-   
     message = Message(
         chat_id=chat.id,
         text=text,
@@ -286,24 +262,17 @@ def save_bot_reply(db: Session, chat: Chat, text: str) -> Message:
     return message
 
 
-# =========================
-# TICKET
-# =========================
 def get_or_create_ticket(db: Session, chat: Chat, priority: TicketPriority = TicketPriority.medium) -> Ticket:
-   
-    # Check apakah sudah punya ticket
     ticket = db.query(Ticket).filter(Ticket.chat_id == chat.id).first()
 
     if ticket:
-        # Jika ticket masih AKTIF (belum resolved/closed), return yang ada
         if ticket.status not in [TicketStatus.resolved, TicketStatus.closed]:
             return ticket
 
-        # Jika ticket sudah RESOLVED/CLOSED, buat baru dengan UPDATE existing ticket
-        # (karena constraint 1 chat = 1 ticket, kita reuse ticket yang sama)
+        # Ticket sudah resolved/closed → reopen untuk percakapan baru
+        # Constraint 1 chat = 1 ticket, jadi kita reset yang ada
         logger.info(f"[TICKET REOPEN] ticket_id={ticket.id} old_status={ticket.status.value}")
 
-        # Reset ticket untuk percakapan baru
         ticket.status = TicketStatus.pending
         ticket.priority = priority
         ticket.assigned_agent_id = None
@@ -320,10 +289,8 @@ def get_or_create_ticket(db: Session, chat: Chat, priority: TicketPriority = Tic
         db.refresh(ticket)
 
         logger.info(f"[TICKET REOPENED] ticket_id={ticket.id} chat_id={chat.id} priority={priority.value}")
-
         return ticket
 
-    # Kalau tidak ada ticket sama sekali, buat BARU
     new_ticket = Ticket(
         chat_id=chat.id,
         status=TicketStatus.pending,
@@ -340,36 +307,26 @@ def get_or_create_ticket(db: Session, chat: Chat, priority: TicketPriority = Tic
         return db.query(Ticket).filter(Ticket.chat_id == chat.id).first()
 
     db.refresh(new_ticket)
-
     logger.info(f"[TICKET CREATED] ticket_id={new_ticket.id} chat_id={chat.id} priority={priority.value}")
-
     return new_ticket
 
 
-# =========================
-# WEBHOOK
-# =========================
 @router.post("/webhook/baileys")
 async def whapi_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    logger.info(f"[WEBHOOK RECEIVED] Headers: {dict(request.headers)}")
     try:
         data = await request.json()
-        logger.info(f"[WEBHOOK DATA] {data}")
     except Exception as e:
-        logger.error(f"[WEBHOOK ERROR] Failed to parse JSON: {e}")
+        logger.error(f"[WEBHOOK] Failed to parse JSON: {e}")
         raise HTTPException(status_code=400, detail="invalid json")
 
-    # 🔍 DEBUG: Check if this is Baileys format (single message) or WHAPI format (messages array)
+    # Deteksi format: single message (Baileys) vs array messages (WHAPI)
     if "from" in data and "text" in data:
-        # Baileys format - single message object
-        logger.info(f"[WEBHOOK] Baileys single message format")
-        msgs = [data]  # Wrap in array
+        msgs = [data]
     elif "messages" in data:
-        # WHAPI format - messages array
         msgs = data.get("messages")
     else:
         logger.error(f"[WEBHOOK] Unknown format: {list(data.keys())}")
@@ -378,56 +335,41 @@ async def whapi_webhook(
     if not msgs:
         return {"status": "ignored"}
 
-    logger.info(f"[WEBHOOK] Will process {len(msgs)} messages")
-
     for msg in msgs:
         try:
-            logger.info(f"[WEBHOOK MSG START] Processing message with keys: {list(msg.keys())}")
-
             sender_raw = msg.get("from")
             if not sender_raw:
-                logger.warning("[WEBHOOK] No 'from' field in message")
                 continue
 
             is_group = sender_raw.endswith("@g.us")
-            
-            # Check mention dari isMentioned atau mentionedJid
+
             is_mentioned = msg.get("isMentioned", False)
             if not is_mentioned and msg.get("mentionedJid"):
                 is_mentioned = len(msg.get("mentionedJid", [])) > 0
-            
-            # ALTERNATIVE: Check apakah text mengandung mention tag (dari baileys)
+
             if not is_mentioned:
                 text_body = msg.get("text", {}).get("body") if isinstance(msg.get("text"), dict) else msg.get("text")
                 if text_body and "@" in text_body and is_group:
-                    is_mentioned = True  # Assume ada mention jika text ada @
+                    is_mentioned = True
 
-            # 🔥 GROUP = HARUS MENTION
+            # Pesan grup tanpa mention → abaikan
             if is_group and not is_mentioned:
                 logger.info(f"[WEBHOOK SKIP] Group message tanpa mention dari {sender_raw}")
                 continue
 
-            #  EXTRACT PHONE NUMBER & PARTICIPANT INFO
-            # Untuk PRIVATE: gunakan sender JID langsung
-            # Untuk GROUP: 1 chat per grup, simpan participant info di message
             participant_phone = None
             participant_name = None
-            participant_jid = None  # For auto-mention when replying
+            participant_jid = None
 
             if is_group:
-                # Ambil participant (pengirim asli di grup)
-                # participant bisa berupa JID resolved atau raw dari Baileys
                 participant_jid = msg.get("participant")
                 if not participant_jid:
                     logger.warning(f"[WEBHOOK] Group message tanpa participant JID, skip")
                     continue
                 participant_phone = normalize_phone(participant_jid)
-                # Prioritas nama: participantName > pushName > phone
                 participant_name = msg.get("participantName") or msg.get("pushname") or msg.get("pushName") or participant_phone
-                phone = None  # Untuk grup, tidak pakai phone sebagai identifier
-                logger.info(f"[WEBHOOK GROUP] participant={participant_phone} name={participant_name} group={sender_raw}")
+                phone = None
             else:
-                # Private chat: gunakan sender langsung
                 phone = normalize_phone(sender_raw)
 
             sender_name = msg.get("pushname") or msg.get("pushName") or (phone or participant_phone)
@@ -438,49 +380,33 @@ async def whapi_webhook(
                 else msg.get("text")
             )
 
-            # Check if message has media (image, video, document, audio)
             has_media = bool(msg.get("mediaBase64") and msg.get("mediaType"))
             media_type_label = msg.get("mediaType", "").capitalize() if has_media else ""
 
             if not text and not has_media:
                 continue
 
-            # If media-only message (no text/caption), use placeholder text
             if not text and has_media:
                 text = f"[{media_type_label or 'Media'}]"
 
             text = text.strip()
 
-            # 🔄 DEDUPLICATION: Check apakah message ini duplicate (race condition)
+            # Cek duplikat untuk menghindari race condition double-processing
             msg_timestamp = msg.get("timestamp") or msg.get("messageTimestamp")
-            # Untuk grup: sertakan group_id agar tidak bentrok dengan private chat yg sama
-            if is_group:
-                dedup_key = f"{sender_raw}:{participant_phone}"
-            else:
-                dedup_key = phone
+            dedup_key = f"{sender_raw}:{participant_phone}" if is_group else phone
             if message_dedup_cache.is_duplicate(dedup_key, text, msg_timestamp):
                 logger.warning(f"[WEBHOOK SKIP DUPLICATE] key={dedup_key} text='{text[:30]}'")
-                continue  # Skip duplicate message
+                continue
 
-            # Hapus mention tag dari text untuk bot processing
-            # Contoh: "@128136708657329 bot halo" -> "bot halo"
+            # Hapus mention tag dari teks sebelum diproses bot
+            # contoh: "@6281234567890 halo bot" → "halo bot"
             if is_group and text.startswith("@"):
-                # Cari spasi pertama setelah @ (akhir dari mention tag)
                 space_idx = text.find(" ")
                 if space_idx != -1:
                     text = text[space_idx:].strip()
 
-            logger.info(
-                f"[INCOMING] group={is_group} mentioned={is_mentioned} from={sender_raw} text='{text}'"
-            )
-
-            # 📱 SIMPAN INFO GRUP jika pesan dari grup
-            # Ini penting agar agent tau ticket datang dari grup mana
             group_id = sender_raw if is_group else None
-            group_name = msg.get("groupName") if is_group else None  # Get from Baileys payload
-
-            if is_group:
-                logger.info(f"[WEBHOOK GROUP INFO] group_id={group_id} group_name={group_name}")
+            group_name = msg.get("groupName") if is_group else None
 
             chat = get_or_create_chat(
                 db, phone, sender_name,
@@ -491,7 +417,6 @@ async def whapi_webhook(
                 participant_name=participant_name
             )
 
-            # Handle incoming media from WhatsApp
             incoming_media_url = None
             incoming_media_type = None
             incoming_media_filename = None
@@ -518,27 +443,29 @@ async def whapi_webhook(
                 media_filename=incoming_media_filename,
             )
 
-            # 📡 Push new message to dashboard clients in real-time via WebSocket
-            await ws_manager.broadcast(chat.id, {
-                "type": "new_message",
-                "chat_id": chat.id,
-            })
+            await ws_manager.broadcast(chat.id, {"type": "new_message", "chat_id": chat.id})
 
-            reply = None  # Reset reply setiap iterasi pesan
-            # 🔒 ACQUIRE PER-CHAT LOCK untuk prevent concurrent processing
+            # Kirim "sedang mengetik..." ke WA customer — fire-and-forget, tidak block apapun
+            wa_target = sender_raw if is_group else f"{phone}@c.us"
+            background_tasks.add_task(send_presence, wa_target, "composing")
+
+            reply = None
+            # Lock per-chat: mencegah concurrent processing pesan dari chat yang sama
             chat_lock = chat_processing_lock.get_lock(chat.id)
 
             with chat_lock:
-                # Re-fetch chat status dalam lock untuk ensure consistency
                 db.refresh(chat)
 
-                # 🔄 AUTO-RESET: Jika chat closed, customer mulai percakapan baru → kembalikan ke bot
-                # (sesuai UI: "Customer akan kembali ke bot jika chat lagi")
-                if chat.mode == ChatMode.closed:
-                    logger.info(f"[BOT RESET] chat_id={chat.id} closed → bot (customer started new conversation)")
+                # Auto-reset ke bot jika:
+                # - closed: customer mulai chat baru
+                # - paused: customer kirim pesan tapi belum ada agent yang assign
+                needs_reset = chat.mode == ChatMode.closed or (
+                    chat.mode == ChatMode.paused and not chat.assigned_agent_id
+                )
+                if needs_reset:
+                    logger.info(f"[BOT RESET] chat_id={chat.id} {chat.mode.value} → bot")
                     chat.mode = ChatMode.bot
                     chat.assigned_agent_id = None
-                    # Reopen ticket jika ada yang resolved/closed
                     existing_ticket = db.query(Ticket).filter(Ticket.chat_id == chat.id).first()
                     if existing_ticket and existing_ticket.status in [TicketStatus.resolved, TicketStatus.closed]:
                         existing_ticket.status = TicketStatus.pending
@@ -551,33 +478,67 @@ async def whapi_webhook(
                     db.commit()
                     db.refresh(chat)
 
-                # ✅ CEK APAKAH BOT HARUS BALAS atau SKIP
-                # Bot hanya balas jika mode = bot (berlaku untuk private maupun grup)
-                # mode=agent/paused → agent yang balas, bot diam
-                should_bot_reply = chat.mode == ChatMode.bot
+                # Customer ketik "#human" → langsung eskalasi tanpa nunggu bot
+                text_lower = text.strip().lower()
+                is_human_trigger = text_lower in ("human", "#human") or "#human" in text_lower
+                if is_human_trigger and chat.mode == ChatMode.bot:
+                    logger.info(f"[HUMAN TRIGGER] chat_id={chat.id} → escalating")
+                    await ws_manager.broadcast(chat.id, {"type": "typing", "sender": "bot", "is_typing": True})
+                    try:
+                        get_or_create_ticket(db, chat, priority=TicketPriority.medium)
+                    except Exception as e:
+                        logger.exception(f"[HUMAN TRIGGER] Failed to create ticket: {e}")
+                    chat.mode = ChatMode.paused
+                    db.commit()
 
+                    sender_jid = msg.get("participant")
+                    target = sender_raw if is_group else f"{phone}@c.us"
+                    if is_group:
+                        mention_phone = participant_phone or "User"
+                        escalation_text = f"@{mention_phone} {ESCALATION_REPLY}"
+                        mentions = [sender_jid] if sender_jid else None
+                    else:
+                        escalation_text = ESCALATION_REPLY
+                        mentions = None
+
+                    try:
+                        save_bot_reply(db, chat, escalation_text)
+                    except Exception as e:
+                        logger.exception(f"[HUMAN TRIGGER] Failed to save escalation reply: {e}")
+
+                    await asyncio.to_thread(send_presence, target, "paused")
+                    await ws_manager.broadcast(chat.id, {"type": "typing", "sender": "bot", "is_typing": False})
+                    await ws_manager.broadcast(chat.id, {"type": "new_message", "chat_id": chat.id})
+                    background_tasks.add_task(send_text, target, escalation_text, mentions)
+                    continue
+
+                # Bot hanya balas saat mode=bot; mode=agent/paused → diam
+                should_bot_reply = chat.mode == ChatMode.bot
                 if not should_bot_reply:
-                    logger.info(f"[BOT SKIP] chat_id={chat.id} mode={chat.mode.value}")
+                    logger.warning(f"[BOT SKIP] chat_id={chat.id} mode={chat.mode.value}")
+                    background_tasks.add_task(send_presence, wa_target, "paused")
                     continue
 
                 bot_user_identifier = sender_raw if is_group else phone
-                logger.info(f"[BOT PROCESS] sender_raw={sender_raw} is_group={is_group} bot_user={bot_user_identifier}")
-                try:
-                    reply = handle_bot(bot_user_identifier, text)
-                    logger.info(f"[BOT RESPONSE] reply={reply}")
-                except Exception as e:
-                    logger.exception(f"[BOT ERROR] handle_bot failed: {e}")
-                    continue
 
-            # Lock released here
+            # Lock dilepas — typing broadcast dan AI call di luar lock supaya event loop
+            # bisa flush WebSocket frame "typing: true" ke browser sebelum HTTP call ke AI mulai
+            await ws_manager.broadcast(chat.id, {"type": "typing", "sender": "bot", "is_typing": True})
+            try:
+                reply = await asyncio.to_thread(handle_bot, bot_user_identifier, text)
+            except Exception as e:
+                logger.exception(f"[BOT ERROR] handle_bot failed: {e}")
+                await asyncio.to_thread(send_presence, wa_target, "paused")
+                await ws_manager.broadcast(chat.id, {"type": "typing", "sender": "bot", "is_typing": False})
+                continue
+            await asyncio.to_thread(send_presence, wa_target, "paused")
+            await ws_manager.broadcast(chat.id, {"type": "typing", "sender": "bot", "is_typing": False})
 
             if reply:
-                logger.info(f"[BOT GOT REPLY] reply='{reply}'")
-
-                # 🎫 CEK ESKALASI: berlaku untuk private chat maupun grup
+                # Jika bot escalate → buat ticket dan set paused
                 if _is_escalation_reply(reply):
                     reply = ESCALATION_REPLY
-                    logger.info(f"[ESCALATION] Detected escalation reply, creating ticket for chat_id={chat.id} is_group={is_group}")
+                    logger.info(f"[ESCALATION] chat_id={chat.id} is_group={is_group}")
                     try:
                         ticket = get_or_create_ticket(db, chat, priority=TicketPriority.medium)
                         logger.info(f"[ESCALATION] ticket_id={ticket.id} status={ticket.status}")
@@ -587,45 +548,36 @@ async def whapi_webhook(
                     chat.mode = ChatMode.paused
                     db.commit()
 
-                # Get participant JID (pengirim pesan di grup)
                 sender_jid = msg.get("participant")
 
                 if is_group:
-                    # Gunakan nomor HP untuk proper WhatsApp mention (@nomorhp), bukan nama display
+                    # Pakai nomor HP untuk mention WA (@nomorhp), bukan nama display
                     mention_phone = participant_phone or "User"
                     reply_text = f"@{mention_phone} {reply}"
-                    logger.info(f"[BOT GROUP] text='{reply_text}' mention_jid={sender_jid}")
+                    mentions = [sender_jid] if sender_jid else None
                 else:
                     reply_text = reply
                     sender_jid = None
-                    logger.info(f"[BOT PRIVATE] text='{reply_text}'")
+                    mentions = None
 
                 try:
                     save_bot_reply(db, chat, reply_text)
                 except Exception as e:
                     logger.exception(f"Failed to save bot reply: {e}")
 
-                # 📡 Broadcast bot reply ke dashboard (sama seperti customer message)
-                await ws_manager.broadcast(chat.id, {
-                    "type": "new_message",
-                    "chat_id": chat.id,
-                })
+                await ws_manager.broadcast(chat.id, {"type": "new_message", "chat_id": chat.id})
 
                 target = sender_raw if is_group else f"{phone}@c.us"
-                mentions = [sender_jid] if sender_jid else None
-                logger.info(f"[BOT SEND] target={target} mentions={mentions}")
-
                 try:
                     background_tasks.add_task(send_text, target, reply_text, mentions)
-                    logger.info(f"[BOT QUEUED] Task queued untuk send")
                 except Exception as e:
                     logger.exception(f"Failed to queue send task: {e}")
             else:
-                # AI tidak bisa jawab → eskalasi ke CS, kirim ESCALATION_REPLY, masuk queue
-                logger.info(f"[BOT NO REPLY] No reply from AI → escalating to CS for chat_id={chat.id}")
+                # AI tidak bisa jawab → eskalasi ke CS
+                logger.info(f"[BOT NO REPLY] chat_id={chat.id} → escalating")
                 try:
                     ticket = get_or_create_ticket(db, chat, priority=TicketPriority.medium)
-                    logger.info(f"[ESCALATION] ticket_id={ticket.id} chat mode → paused (no AI answer)")
+                    logger.info(f"[ESCALATION] ticket_id={ticket.id} → paused")
                 except Exception as e:
                     logger.exception(f"[ESCALATION ERROR] {e}")
                 # Set paused SETELAH get_or_create_ticket agar tidak di-override
@@ -646,7 +598,7 @@ async def whapi_webhook(
                     save_bot_reply(db, chat, escalation_text)
                     background_tasks.add_task(send_text, target, escalation_text, mentions)
                     await ws_manager.broadcast(chat.id, {"type": "new_message", "chat_id": chat.id})
-                    logger.info(f"[ESCALATION SENT] target={target} text='{escalation_text}'")
+                    logger.info(f"[ESCALATION SENT] target={target}")
                 except Exception as e:
                     logger.exception(f"[ESCALATION SEND ERROR] {e}")
         except Exception as e:
@@ -655,15 +607,11 @@ async def whapi_webhook(
     return {"status": "ok"}
 
 
-# =========================
-# TYPING WEBHOOK (from Baileys)
-# =========================
 @router.post("/webhook/typing")
 async def typing_webhook(request: Request, db: Session = Depends(get_db)):
     """
-    Receives typing presence events from Baileys service.
+    Terima typing presence dari Baileys dan broadcast ke dashboard via WebSocket.
     Payload: {"from": "628xxx@c.us", "is_typing": true, "is_group": false}
-    Broadcasts to dashboard via WebSocket.
     """
     try:
         data = await request.json()
@@ -673,41 +621,35 @@ async def typing_webhook(request: Request, db: Session = Depends(get_db)):
     sender_raw = data.get("from")
     is_typing = bool(data.get("is_typing", False))
     is_group = bool(data.get("is_group", False))
-    participant_raw = data.get("participant")  # JID peserta yang typing di grup
+    participant_raw = data.get("participant")
 
     if not sender_raw:
         return {"status": "ignored"}
 
-    # Find the chat to get chat_id for WebSocket broadcast
     phone = sender_raw.split("@")[0]
     if is_group:
         if not participant_raw:
-            # Tidak tahu siapa yang typing di grup → skip, jangan broadcast ke random chat
-            logger.warning(f"[TYPING] Group typing event tanpa participant, skip. group={sender_raw}")
+            logger.warning(f"[TYPING] Group typing tanpa participant, skip. group={sender_raw}")
             return {"status": "ignored"}
-        # Cari chat SPESIFIK: group_id + participant_phone (bukan semua chat di grup)
         participant_phone = participant_raw.split("@")[0]
         chat = db.query(Chat).filter(
             Chat.group_id == sender_raw,
             Chat.customer_phone == participant_phone
         ).first()
     else:
-        # Private chat: pastikan bukan group chat (group_id harus NULL)
         chat = db.query(Chat).filter(
             Chat.customer_phone == phone,
             Chat.group_id.is_(None)
         ).first()
 
     if not chat:
-        logger.warning(f"[TYPING] chat_not_found phone={phone} is_group={is_group} sender_raw={sender_raw}")
+        logger.warning(f"[TYPING] chat_not_found phone={phone} is_group={is_group}")
         return {"status": "chat_not_found"}
 
-    # Broadcast typing event to all dashboard clients watching this chat
     await ws_manager.broadcast(chat.id, {
         "type": "typing",
         "sender": "customer",
         "is_typing": is_typing,
     })
 
-    logger.warning(f"[TYPING] broadcast chat_id={chat.id} phone={phone} is_typing={is_typing}")
     return {"status": "ok"}

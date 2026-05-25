@@ -181,20 +181,17 @@ def get_ticket_queue(db: Session = Depends(get_db)):
 
 
 @router.post("/{chat_id}/claim", response_model=ChatResponse)
-def claim_ticket_endpoint(
+async def claim_ticket_endpoint(
     chat_id: int,
     db: Session = Depends(get_db),
     authorization: Optional[str] = Header(None)
 ):
     """
     Claim a ticket from the queue.
-
-    - Assigns the chat to the requesting agent
-    - Changes chat mode from 'bot' to 'agent'
-    - Returns the claimed chat details
-
-    Only agents can claim tickets.
+    Broadcasts ticket_claimed event so other agents remove it from their list immediately.
     """
+    from app.services.ws_manager import manager as ws_manager
+
     user = get_current_user(authorization)
 
     if not user:
@@ -209,7 +206,16 @@ def claim_ticket_endpoint(
             detail="Only agents can claim tickets"
         )
 
-    return claim_ticket(chat_id, user.get("id"), db)
+    result = claim_ticket(chat_id, user.get("id"), db)
+
+    # Broadcast ke semua agent agar yang lain langsung hapus chat ini dari list
+    await ws_manager.broadcast_global({
+        "type": "ticket_claimed",
+        "chat_id": chat_id,
+        "by_agent_id": user.get("id"),
+    })
+
+    return result
 
 
 # ================= FILE UPLOAD ENDPOINT =================

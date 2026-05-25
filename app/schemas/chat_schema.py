@@ -74,6 +74,7 @@ class ChatUpdate(BaseModel):
     assigned_agent_id: Optional[int] = None
     online: Optional[bool] = None
     unread_count: Optional[int] = None
+    priority: Optional[str] = None  # "low", "medium", "high"
 
 
 class CustomerProfile(BaseModel):
@@ -95,6 +96,11 @@ class ChatResponse(BaseModel):
     # Group information (for WhatsApp group chats)
     group_id: Optional[str] = None
     group_name: Optional[str] = None
+    # Transfer info: diisi saat chat baru saja ditransfer dari agent lain
+    transfer_note: Optional[str] = None
+    transfer_from_agent: Optional[str] = None
+    # Ticket priority
+    priority: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -122,6 +128,7 @@ class ChatListResponse(BaseModel):
     group_name: Optional[str] = None
     # Last participant info (for group chats - who sent last message)
     last_participant_name: Optional[str] = None
+    priority: Optional[str] = None
 
     class Config:
         from_attributes = True

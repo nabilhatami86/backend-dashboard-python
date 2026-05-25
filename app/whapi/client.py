@@ -125,3 +125,25 @@ def send_media(
         # WHAPI doesn't support media in this implementation
         logger.warning("Media sending not supported via WHAPI, sending caption as text")
         return send_text_via_whapi(to, caption or f"[{media_type}]")
+
+
+def send_presence(to: str, status: str = "composing") -> None:
+    """
+    Send WhatsApp presence update (typing indicator) to a JID.
+    status: "composing" = typing..., "paused" = stopped typing
+    Only works when WA_PROVIDER=baileys. Silently ignored otherwise.
+    """
+    if settings.WA_PROVIDER != "baileys":
+        return
+    if not settings.BAILEYS_SERVICE_URL or not settings.BAILEYS_API_KEY:
+        return
+    try:
+        requests.post(
+            f"{settings.BAILEYS_SERVICE_URL}/send-presence",
+            json={"to": to, "status": status},
+            headers={"Content-Type": "application/json", "x-api-key": settings.BAILEYS_API_KEY},
+            timeout=5,
+        )
+        logger.info(f"[PRESENCE] {status} → {to}")
+    except Exception as e:
+        logger.warning(f"[PRESENCE] Failed to send {status} to {to}: {e}")

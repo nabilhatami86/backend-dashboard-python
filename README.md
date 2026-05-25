@@ -16,6 +16,12 @@ API backend untuk dashboard customer service WhatsApp. Dibangun dengan FastAPI +
 8. [Konfigurasi Bot AI](#8-konfigurasi-bot-ai)
 9. [Troubleshooting](#9-troubleshooting)
 
+Dokumentasi detail ada di folder [`docs/`](./docs/):
+- [`docs/models.md`](./docs/models.md) — semua tabel database
+- [`docs/routes.md`](./docs/routes.md) — semua endpoint API
+- [`docs/services.md`](./docs/services.md) — QueueService, WebSocket, bot_service
+- [`docs/controllers.md`](./docs/controllers.md) — business logic tiap controller
+
 ---
 
 ## 1. Apa ini?
@@ -46,28 +52,29 @@ backend-dashboard-python/
 │   ├── main.py                    # FastAPI app, startup events, routes
 │   ├── config/
 │   │   ├── database.py            # Koneksi PostgreSQL (SQLAlchemy)
-│   │   ├── deps.py                # Dependency injection (get_db)
+│   │   ├── deps.py                # Dependency injection (get_db, get_current_user)
 │   │   ├── config.py              # Baca config DB
 │   │   └── confiq_whapi.py        # Config WA provider (Baileys / WHAPI)
 │   ├── models/                    # Tabel database (SQLAlchemy ORM)
-│   │   ├── chat.py                # Tabel chats
-│   │   ├── message.py             # Tabel messages
-│   │   ├── ticket.py              # Tabel tickets
-│   │   ├── user.py                # Tabel users (admin + agent)
-│   │   ├── agent_profile.py       # Profil & status agent
-│   │   ├── agent_metrics.py       # Metrik performa agent
-│   │   ├── queue_assignment.py    # Antrian tiket
-│   │   └── shortcut_message.py    # Pesan shortcut
+│   │   ├── chat.py
+│   │   ├── message.py
+│   │   ├── ticket.py
+│   │   ├── user.py
+│   │   ├── agent_profile.py
+│   │   ├── agent_metrics.py
+│   │   ├── queue_assignment.py
+│   │   ├── admin_message.py
+│   │   └── shortcut_message.py
 │   ├── controller/                # Business logic
-│   │   ├── chat_controller.py
 │   │   ├── auth_controller.py
+│   │   ├── chat_controller.py
 │   │   ├── users_controller.py
 │   │   ├── admin_chat_controller.py
 │   │   └── shortcut_controller.py
 │   ├── services/
 │   │   ├── bot_service.py         # Logika bot AI + state machine
 │   │   ├── ws_manager.py          # Broadcast WebSocket
-│   │   └── queue_service.py       # Manajemen antrian tiket
+│   │   └── queue_service.py       # Manajemen antrian tiket (FCFS)
 │   ├── routes/                    # Router FastAPI
 │   │   ├── auth.py
 │   │   ├── chat.py
@@ -76,13 +83,14 @@ backend-dashboard-python/
 │   │   ├── agent_chat.py
 │   │   ├── admin_chat.py
 │   │   ├── shortcuts.py
-│   │   └── ws.py                  # WebSocket endpoint
+│   │   └── ws.py
 │   ├── whapi/
 │   │   ├── webhook.py             # Endpoint penerima pesan dari Baileys
 │   │   └── client.py              # Kirim pesan ke WA via Baileys / WHAPI
 │   └── schemas/                   # Pydantic schemas (request/response)
+├── docs/                          # Dokumentasi detail
 ├── alembic/                       # Migrasi database
-├── uploads/                       # File media yang diterima dari customer
+├── uploads/                       # File media dari customer
 ├── .env
 └── requirements.txt
 ```
@@ -148,20 +156,19 @@ docker-compose up -d
 Buat file `.env` di root folder `backend-dashboard-python/`:
 
 ```env
-# ── Database ──────────────────────────────────────
+# Database
 DB_HOST=localhost
 DB_PORT=5432
 DB_NAME=dashboard_db
 DB_USER=postgres
 DB_PASSWORD=postgres123
 
-# ── Auth (JWT) ────────────────────────────────────
+# Auth (JWT)
 SECRET_KEY=ganti-dengan-string-acak-yang-panjang
 ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=60000
 
-# ── WhatsApp Provider ─────────────────────────────
-# Pilihan: "baileys" atau "whapi"
+# WhatsApp Provider — pilih "baileys" atau "whapi"
 WA_PROVIDER=baileys
 
 # Jika WA_PROVIDER=baileys
@@ -172,13 +179,12 @@ BAILEYS_API_KEY=baileys-internal-2026
 WHAPI_BASE_URL=https://gate.whapi.cloud
 WHAPI_TOKEN=token-dari-whapi
 
-# ── Bot AI ────────────────────────────────────────
+# Bot AI
 BOT_REPLY_API_URL=https://api-ai-kamu.com/chat
 BOT_REPLY_API_KEY=api-key-kamu
 BOT_REPLY_API_TIMEOUT_SECONDS=15
 
-# ── Admin WA ──────────────────────────────────────
-# Nomor WA admin (bisa kirim command khusus ke bot)
+# Nomor WA admin — bisa kirim command khusus ke bot (comma-separated)
 WHAPI_ADMINS=628111,628222
 ```
 
@@ -186,60 +192,102 @@ WHAPI_ADMINS=628111,628222
 
 ## 5. API Endpoints
 
-### Auth
-| Method | Path | Keterangan |
-|--------|------|------------|
-| `POST` | `/api/auth/login` | Login, dapat JWT token |
-| `GET` | `/api/auth/me` | Info user yang sedang login |
+Prefix `/api` ditambahkan oleh Nginx/reverse proxy, tidak ada di kode FastAPI.
+Untuk detail lengkap tiap endpoint lihat [`docs/routes.md`](./docs/routes.md).
 
-### Chat (Admin)
+### Auth — `/auth`
 | Method | Path | Keterangan |
 |--------|------|------------|
-| `GET` | `/api/admin/chats` | List semua chat aktif |
-| `GET` | `/api/admin/chats/{id}` | Detail chat + semua pesan |
-| `POST` | `/api/admin/chats/{id}/messages` | Kirim pesan sebagai agent |
-| `PATCH` | `/api/admin/chats/{id}` | Update mode / assign agent |
-| `DELETE` | `/api/admin/chats/{id}` | Hapus chat |
+| `POST` | `/auth/login` | Login, dapat JWT token |
+| `POST` | `/auth/register` | Daftar user baru |
+| `POST` | `/auth/logout` | Logout, set agent offline |
 
-### Chat (Agent)
+### Chat — `/chats`
 | Method | Path | Keterangan |
 |--------|------|------------|
-| `GET` | `/api/agent/chats` | List chat yang di-assign ke agent ini |
-| `GET` | `/api/agent/chats/{id}` | Detail chat |
-| `POST` | `/api/agent/chats/{id}/messages` | Kirim pesan |
-| `POST` | `/api/agent/chats/{id}/read` | Tandai semua pesan sudah dibaca |
+| `GET` | `/chats` | List semua chat aktif |
+| `GET` | `/chats/{id}` | Detail chat + semua pesan |
+| `POST` | `/chats` | Buat chat baru |
+| `PATCH` | `/chats/{id}` | Update mode / assign agent / prioritas |
+| `DELETE` | `/chats/{id}` | Hapus chat (admin only) |
+| `POST` | `/chats/messages` | Kirim pesan |
+| `POST` | `/chats/{id}/read` | Tandai pesan sudah dibaca |
+| `PATCH` | `/chats/messages/{id}` | Edit pesan agent |
+| `DELETE` | `/chats/messages/{id}` | Hapus pesan |
+| `GET` | `/chats/queue/available` | Daftar chat di antrian (mode=paused) |
+| `POST` | `/chats/{id}/claim` | Agent ambil chat dari antrian |
+| `POST` | `/chats/upload` | Upload file media |
 
-### Tiket
+### Agent — `/agent/chats`
 | Method | Path | Keterangan |
 |--------|------|------------|
-| `GET` | `/api/tickets` | List tiket yang tersedia di antrian |
-| `POST` | `/api/tickets/{id}/claim` | Agent ambil tiket |
+| `GET` | `/agent/chats/my-chats` | Chat yang di-assign ke agent |
+| `GET` | `/agent/chats/chat/{id}/messages` | Pesan dari satu chat (paginated) |
+| `POST` | `/agent/chats/send-message` | Kirim pesan ke customer via WA |
+| `PATCH` | `/agent/chats/status` | Update status online/availability |
+| `POST` | `/agent/chats/heartbeat` | Heartbeat tiap ~90 detik |
+| `GET` | `/agent/chats/status` | Status lengkap agent |
+| `GET` | `/agent/chats/daily-stats` | Statistik hari ini |
+| `POST` | `/agent/chats/chat/{id}/mark-waiting` | Tandai menunggu balasan customer |
+| `POST` | `/agent/chats/chat/{id}/resolve` | Selesaikan tiket |
 
-### Users (Admin)
+### Tiket — `/tickets`
 | Method | Path | Keterangan |
 |--------|------|------------|
-| `GET` | `/api/users/agents` | List semua agent |
-| `POST` | `/api/users/agents` | Buat agent baru |
-| `PUT` | `/api/users/agents/{id}` | Edit agent |
-| `DELETE` | `/api/users/agents/{id}` | Hapus agent |
+| `GET` | `/tickets/queue` | Tiket pending di antrian |
+| `GET` | `/tickets/my-tickets` | Tiket agent yang login |
+| `GET` | `/tickets/all` | Semua tiket (admin only) |
+| `GET` | `/tickets/{id}` | Detail satu tiket |
+| `POST` | `/tickets/{id}/claim` | Agent self-claim tiket |
+| `POST` | `/tickets/{id}/assign` | Admin assign tiket ke agent |
+| `POST` | `/tickets/{id}/transfer` | Transfer tiket ke agent lain |
+| `POST` | `/tickets/transfer-by-chat/{chat_id}` | Transfer via chat_id |
+| `PATCH` | `/tickets/{id}/status` | Update status tiket |
+| `PATCH` | `/tickets/{id}/priority` | Ubah prioritas (admin only) |
+| `POST` | `/tickets/{id}/resolve` | Resolve tiket |
+| `GET` | `/tickets/stats/overview` | Statistik overview semua tiket |
+| `GET` | `/tickets/online-agents` | Agent online untuk dropdown transfer |
 
-### Shortcuts
+### Users — `/users`
 | Method | Path | Keterangan |
 |--------|------|------------|
-| `GET` | `/api/shortcuts` | List pesan shortcut milik agent |
-| `POST` | `/api/shortcuts` | Buat shortcut baru |
-| `DELETE` | `/api/shortcuts/{id}` | Hapus shortcut |
+| `GET` | `/users/agents` | Semua agent + status |
+| `GET` | `/users/admins` | Semua admin |
+| `GET` | `/users` | Semua user |
+| `POST` | `/users/agents` | Buat agent baru (admin only) |
+| `PUT` | `/users/agents/{id}` | Edit agent (admin only) |
+| `DELETE` | `/users/agents/{id}` | Hapus agent (admin only) |
+| `PATCH` | `/users/agents/me/tag` | Agent ganti display_name sendiri |
+| `PATCH` | `/users/{id}` | Update profil (name, email, phone) |
+
+### Admin Chat — `/admin-chat`
+| Method | Path | Keterangan |
+|--------|------|------------|
+| `GET` | `/admin-chat/{agent_id}` | Riwayat chat internal admin-agent |
+| `POST` | `/admin-chat/{agent_id}/messages` | Kirim pesan ke agent |
+
+### Shortcuts — `/shortcuts`
+| Method | Path | Keterangan |
+|--------|------|------------|
+| `GET` | `/shortcuts` | Semua shortcut |
+| `GET` | `/shortcuts/search?q=...` | Cari shortcut (untuk auto-suggest `/`) |
+| `GET` | `/shortcuts/{id}` | Detail shortcut |
+| `POST` | `/shortcuts` | Buat shortcut baru |
+| `PATCH` | `/shortcuts/{id}` | Edit shortcut |
+| `POST` | `/shortcuts/{id}/duplicate` | Salin shortcut agent lain |
+| `DELETE` | `/shortcuts/{id}` | Hapus shortcut |
+
+### WebSocket — `/ws`
+| Path | Keterangan |
+|------|------------|
+| `WS /ws/agents` | Update status agent (global) |
+| `WS /ws/{chat_id}` | Notifikasi pesan baru + typing per chat |
 
 ### Webhook (dari Baileys service)
 | Method | Path | Keterangan |
 |--------|------|------------|
-| `POST` | `/webhook/baileys` | Terima pesan masuk dari WA |
-| `POST` | `/webhook/typing` | Terima typing indicator dari WA |
-
-### WebSocket
-| Path | Keterangan |
-|------|------------|
-| `WS /ws` | Real-time update ke dashboard |
+| `POST` | `/webhook/baileys` | Pesan masuk dari WA |
+| `POST` | `/webhook/typing` | Typing indicator dari customer |
 
 ### Health
 | Method | Path | Keterangan |
@@ -251,63 +299,28 @@ WHAPI_ADMINS=628111,628222
 
 ## 6. Database Models
 
-### Chat (`chats`)
+Detail lengkap semua model ada di [`docs/models.md`](./docs/models.md).
 
-Satu baris = satu percakapan aktif dengan satu customer (atau satu participant di grup).
+Model utama:
 
-| Kolom | Keterangan |
-|-------|------------|
-| `customer_name` | Nama customer |
-| `customer_phone` | Nomor HP (tanpa `@`) |
-| `group_id` | JID grup jika dari grup (e.g. `120363xxx@g.us`) |
-| `group_name` | Nama grup |
-| `last_participant_jid` | JID terakhir yang kirim pesan di grup (untuk auto-mention saat agent balas) |
-| `mode` | `bot` / `agent` / `paused` / `closed` |
-| `assigned_agent_id` | FK ke tabel users (agent yang handle) |
-| `unread_count` | Jumlah pesan belum dibaca |
+| Model | Tabel | Keterangan |
+|-------|-------|------------|
+| `User` | `users` | Admin dan agent |
+| `Chat` | `chats` | Percakapan dengan customer |
+| `Message` | `messages` | Pesan dalam chat |
+| `Ticket` | `tickets` | Satu per chat, tracking status penanganan |
+| `AgentProfile` | `agent_profiles` | Status, display_name, kapasitas agent |
+| `QueueAssignment` | `queue_assignments` | Riwayat assignment tiket |
+| `AdminMessage` | `admin_messages` | Chat internal admin-agent |
+| `ShortcutMessage` | `shortcut_messages` | Template pesan cepat |
+| `AgentMetrics` | `agent_metrics` | Statistik harian per agent |
 
-**Mode lifecycle:**
+**Mode chat lifecycle:**
 ```
 bot ──(AI tidak bisa jawab)──► paused ──(agent claim)──► agent ──(tutup)──► closed
  ▲                                                                              │
  └──────────────────────(customer chat lagi setelah closed)────────────────────┘
 ```
-
-### Message (`messages`)
-
-| Kolom | Keterangan |
-|-------|------------|
-| `chat_id` | FK ke tabel chats |
-| `text` | Isi pesan |
-| `sender` | `customer` atau `agent` |
-| `status` | `sent` atau `read` |
-| `participant_phone` | Nomor pengirim di grup |
-| `participant_name` | Nama pengirim di grup |
-| `media_url` | Path file di server (`/uploads/...`) |
-| `media_type` | `image` / `video` / `audio` / `document` |
-| `media_filename` | Nama file (untuk dokumen) |
-
-### Ticket (`tickets`)
-
-Satu tiket per chat. Melacak siapa yang handle dan berapa lama.
-
-| Status | Keterangan |
-|--------|------------|
-| `pending` | Menunggu diambil agent |
-| `assigned` | Sudah ada agent, belum mulai |
-| `in_progress` | Sedang dikerjakan |
-| `resolved` | Selesai |
-
-### AgentProfile (`agent_profiles`)
-
-Profil tambahan untuk user dengan role `agent`.
-
-| Kolom | Keterangan |
-|-------|------------|
-| `display_name` | Tag nama di akhir pesan (`~ NamaAgent`) |
-| `status` | `online` / `offline` / `busy` / `break` |
-| `is_available` | Apakah bisa terima tiket baru |
-| `last_activity_at` | Timestamp heartbeat terakhir (untuk deteksi agent idle) |
 
 ---
 
@@ -362,7 +375,7 @@ Saat bot tidak bisa menjawab, customer akan menerima:
 
 > *"Baik kak, akan kami hubungi ke Customer Service kita, Sebentar ya"*
 
-Dan chat masuk ke mode `paused` → tiket tersedia di antrian untuk diambil agent.
+Chat masuk mode `paused` → tiket tersedia di antrian untuk diambil agent.
 
 ### Tag Agent di Pesan
 
@@ -371,7 +384,7 @@ Setiap pesan yang dikirim agent dari dashboard otomatis ditambah:
 Halo kak, stok masih tersedia.
 ~ Nama Agent
 ```
-Nama diambil dari `AgentProfile.display_name` atau nama user jika belum diset.
+Nama diambil dari `AgentProfile.display_name`.
 
 ### Agent Status Auto-Reset
 
@@ -418,7 +431,7 @@ Pastikan Baileys service mengirim ke URL yang benar dan `INTERNAL_API_KEY` cocok
 
 1. Cek `BOT_REPLY_API_URL` sudah diset di `.env`
 2. Cek apakah mode chat saat ini `bot` (bukan `agent` atau `paused`)
-3. Buka `http://localhost:8000/docs` → coba endpoint `/api/admin/chats/{id}` untuk cek mode
+3. Buka `http://localhost:8000/docs` → coba endpoint `/chats/{id}` untuk cek mode
 
 ### Agent tidak bisa kirim pesan ke WA
 
